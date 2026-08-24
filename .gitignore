@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# OryxOS runtime workspace
+.oryxos/
+
+# Go build and test artifacts
+/oryxos
+*.test
+*.out
+coverage/
+
+# Runtime data
+*.db
+*.db-shm
+*.db-wal
+logs/
+
+# Local agent workflow artifacts
+.superpowers/

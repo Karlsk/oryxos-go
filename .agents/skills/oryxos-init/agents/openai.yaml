@@ -1,0 +1,4 @@
+interface:
+  display_name: "OryxOS Init"
+  short_description: "Initialize the OryxOS Go engineering foundation"
+  default_prompt: "Use $oryxos-init to initialize or incrementally complete the OryxOS Go foundation."
