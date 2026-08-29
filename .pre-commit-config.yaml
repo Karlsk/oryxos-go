@@ -1,0 +1,33 @@
+repos:
+  - repo: local
+    hooks:
+      - id: source-hygiene
+        name: reject conflict markers, trailing whitespace, and missing final newlines
+        language: system
+        types: [text]
+        entry: >-
+          sh -c 'set -eu; for file_path in "$@"; do [ -f "$file_path" ] || continue;
+          ! grep -nE "^(<<<<<<<|=======|>>>>>>>)" "$file_path";
+          ! grep -nE "[[:blank:]]$" "$file_path";
+          [ ! -s "$file_path" ] || [ -z "$(tail -c 1 "$file_path")" ]; done' --
+      - id: go-format-check
+        name: check changed Go files with gofmt and pinned goimports
+        language: system
+        files: '\.go$'
+        entry: >-
+          sh -c 'set -eu; [ "$#" -eq 0 ] && exit 0;
+          gofmt_diff="$(gofmt -d "$@")"; [ -z "$gofmt_diff" ];
+          goimports_diff="$(go tool goimports -d "$@")"; [ -z "$goimports_diff" ]' --
+      - id: go-test
+        name: run repository Go tests
+        language: system
+        pass_filenames: false
+        entry: go test ./...
+      - id: pinned-workflow-refs
+        name: reject floating workflow and tool references
+        language: system
+        pass_filenames: false
+        entry: >-
+          sh -c 'set -eu;
+          ! grep -nE "@(latest|main|master)" go.mod .golangci.yml .github/workflows/verify.yml;
+          ! grep -nE "^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*[^@[:space:]]+[[:space:]]*$" .github/workflows/verify.yml'

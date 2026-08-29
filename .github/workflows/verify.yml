@@ -1,0 +1,50 @@
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Check formatting
+        run: |
+          set -eu
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          gofmt -d $(find cmd internal -name '*.go') >"$tmpdir/gofmt.diff"
+          test ! -s "$tmpdir/gofmt.diff"
+          go tool goimports -d $(find cmd internal -name '*.go') >"$tmpdir/goimports.diff"
+          test ! -s "$tmpdir/goimports.diff"
+      - name: Check module tidiness
+        run: go mod tidy -diff
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Race test
+        run: go test -race ./...
+      - uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.12.2
+      - name: Security scan
+        run: |
+          go tool gosec ./cmd/... ./internal/...
+          go tool govulncheck ./cmd/... ./internal/...
+      - name: Build CGO-free binary
+        run: |
+          set -eu
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          CGO_ENABLED=0 go build -o "$tmpdir/oryxos" ./cmd/oryxos
+          test -f "$tmpdir/oryxos"

@@ -1,0 +1,39 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - forbidigo
+    - gocritic
+    - gocyclo
+    - govet
+    - ineffassign
+    - noctx
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+  settings:
+    gocyclo:
+      min-complexity: 20
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print.*$
+          msg: use the application slog logger for diagnostics
+        - pattern: ^print(ln)?$
+          msg: use the application slog logger for diagnostics
+        - pattern: ^os\.(Stdout|Stderr)\.(Write|WriteString)$
+          msg: use the application slog logger for diagnostics
+  exclusions:
+    rules:
+      # Owner: foundation final review. Task 9 must not rewrite pre-existing test
+      # harnesses; review each rule when its owning test contract changes.
+      - path: '(.+)_test\.go'
+        linters:
+          - forbidigo
+      - path-except: '^internal/'
+        linters:
+          - forbidigo
