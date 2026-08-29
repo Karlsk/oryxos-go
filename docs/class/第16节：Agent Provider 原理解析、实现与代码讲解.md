@@ -34,7 +34,7 @@ OryxOS 的第一块核心能力是 Provider，也就是对接大模型（LLM）�
 
 ![动手前想清楚：Provider 的职责边界](../../website/public/images/class-16-2.svg)
 
-**第二，哪些不自己造。** 各家大模型的协议不一样，OpenAI、Anthropic、Gemini 的工具格式各写各的。这些转换 Spring AI Alibaba 已经做好了，我们直接用，不重复造。我们要写的只是薄薄一层 `ProviderService`，套在它上面。
+**第二，哪些不自己造。** 各家大模型的协议不一样，OpenAI、Anthropic、Gemini 的工具格式各写各的。这些转换 Enio和Enio-ext 已经做好了，我们直接用，不重复造。我们要写的只是薄薄一层 `ProviderService`，套在它上面。
 
 **第三，三个坑——这几个直接决定了架构长什么样。**
 

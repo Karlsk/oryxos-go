@@ -27,3 +27,4 @@ logs/
 
 # Local agent workflow artifacts
 .superpowers/
+.agents/skills/oryxos-init.tar.gz
