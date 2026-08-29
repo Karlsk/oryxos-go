@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: internal_core
-title: 进程应用编排与配置/可观测性基础设施
+title: 进程应用编排与配置/可观测性装配层
 scope:
     - internal/app/
     - internal/bootstrap/

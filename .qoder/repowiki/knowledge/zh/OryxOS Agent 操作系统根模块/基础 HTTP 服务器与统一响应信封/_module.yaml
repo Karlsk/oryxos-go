@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: internal_web
-title: HTTP 基础服务与统一 API 契约
+title: 基础 HTTP 服务器与统一响应信封
 scope:
     - internal/web/
 source_files: []

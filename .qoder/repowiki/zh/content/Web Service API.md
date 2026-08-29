@@ -9,6 +9,8 @@
 - [pagination.go](file://internal/web/api/pagination.go)
 - [request_id.go](file://internal/web/middleware/request_id.go)
 - [access.go](file://internal/web/middleware/access.go)
+- [body_limit.go](file://internal/web/middleware/body_limit.go)
+- [recovery.go](file://internal/web/middleware/recovery.go)
 - [application.go](file://internal/app/application.go)
 - [foundation.go](file://internal/app/foundation.go)
 - [ApiConvention.md](file://docs/ApiConvention.md)
@@ -18,10 +20,10 @@
 
 ## 更新摘要
 **变更内容**
-- 更新了核心阶段10个端点的详细规范，包含完整的请求响应示例
-- 增强了API约定部分，添加了更详细的错误处理和分页规范
-- 补充了业务系统集成场景的详细说明
-- 更新了图表以反映实际的实现架构
+- 增强了 Web 服务器基础设施，采用生产就绪的 Gin 框架实现
+- 添加了全面的中间件栈：请求 ID 生成、请求体大小限制、访问观测与日志、统一恢复机制
+- 详细覆盖了健康检查 (`/api/v1/health`) 和信息端点 (`/api/v1/info`) 的实现细节
+- 更新了架构图表以反映实际的中间件处理流程和响应封装机制
 
 ## 目录
 - Handler 结构
@@ -30,25 +32,40 @@
 - 业务系统集成场景
 
 ## Handler 结构
-OryxOS 的 Web Service 基于 Gin 构建，采用"中间件 + 路由组 + 轻量 Handler"的分层组织方式：
-- 中间件层负责请求级横切能力：请求 ID、请求体大小限制、访问观测与日志、统一恢复。
-- 路由层以 /api/v1 为版本前缀，集中注册当前阶段的 REST 端点。
-- Handler 仅做协议解析、参数校验、调用上层服务并返回统一信封响应；不直接访问数据库或外部 Provider。
+OryxOS 的 Web Service 基于 Gin 框架构建，采用"中间件 + 路由组 + 轻量 Handler"的分层组织方式：
 
-当前实现已提供两个系统级 Handler：
-- healthHandler：根据就绪状态返回健康检查结果。
-- infoHandler：返回版本、运行模式与就绪信息。
+### 中间件层
+当前实现提供了四个核心中间件，按执行顺序处理请求：
+
+1. **RequestID 中间件**：负责请求 ID 的生成和验证，确保每个请求都有稳定的追踪标识
+2. **RequestBodyLimit 中间件**：限制请求体大小为 1MB，防止内存攻击
+3. **AccessObservation 中间件**：记录请求方法、路由、状态码、耗时等指标，并输出结构化日志
+4. **Recovery 中间件**：捕获未处理的 panic，转换为统一的错误响应
+
+### 路由层
+- 版本前缀：`/api/v1`
+- 当前已实现的系统级端点：
+  - `GET /api/v1/health`：健康检查端点
+  - `GET /api/v1/info`：运行信息端点
+- 未匹配的路由返回 `not_found` 错误
+- 不支持的方法返回 `method_not_allowed` 错误
+
+### Handler 设计原则
+- 仅负责协议解析、参数校验、调用上层服务
+- 不直接访问数据库或外部 Provider
+- 使用统一的响应信封格式返回结果
 
 ```mermaid
 graph TB
 A["客户端"] --> B["Gin 引擎"]
-B --> C["中间件: 请求ID"]
-C --> D["中间件: 请求体大小限制"]
-D --> E["中间件: 访问观测与日志"]
-E --> F["中间件: 统一恢复"]
+B --> C["中间件: RequestID<br/>生成/验证 X-Request-ID"]
+C --> D["中间件: RequestBodyLimit<br/>限制 1MB 请求体"]
+D --> E["中间件: AccessObservation<br/>记录指标和日志"]
+E --> F["中间件: Recovery<br/>捕获 panic"]
 F --> G["路由组 /api/v1"]
 G --> H["GET /health -> healthHandler"]
 G --> I["GET /info -> infoHandler"]
+G --> J["其他路由 -> not_found"]
 ```
 
 **图表来源**
@@ -106,22 +123,27 @@ G --> I["GET /info -> infoHandler"]
   - 状态码：200 OK
 
 ### 系统（System）
-- **GET /api/v1/health**：健康检查
-  - 轻量级存活探针
-  - 返回 status 和 uptime_ms
-  - 状态码：200 OK
 
+#### 健康检查端点
+- **GET /api/v1/health**：健康检查
+  - 轻量级存活探针，检查服务就绪状态
+  - 当服务未就绪时返回 503 Service Unavailable
+  - 成功时返回 200 OK 和就绪状态
+  - 状态码：200 OK / 503 Service Unavailable
+
+#### 运行信息端点
 - **GET /api/v1/info**：运行信息
-  - 返回版本、工作空间、Provider 状态
-  - 包含 active_sessions、tools_registered 等指标
+  - 返回版本、工作模式、就绪状态
+  - 包含 active_sessions、tools_registered 等运行时指标
+  - 用于监控和诊断目的
   - 状态码：200 OK
 
 ```mermaid
 flowchart TD
 Start(["请求进入"]) --> Health{"路径匹配"}
-Health --> |/api/v1/health| H["healthHandler"]
-Health --> |/api/v1/info| I["infoHandler"]
-Health --> |其他| NotFound["not_found"]
+Health --> |/api/v1/health| H["healthHandler<br/>检查服务就绪状态"]
+Health --> |/api/v1/info| I["infoHandler<br/>返回运行时信息"]
+Health --> |其他| NotFound["not_found<br/>404 Not Found"]
 H --> End(["返回统一信封"])
 I --> End
 NotFound --> End
@@ -151,6 +173,7 @@ OryxOS 对外暴露统一的 JSON 信封、稳定的错误码、一致的请求�
 - 通过 X-Request-ID 头传递；若无效则自动生成
 - 响应头、响应体 request_id、访问日志中的关联值必须一致
 - 有效格式：a-zA-Z0-9._-，长度不超过128字符
+- 自动生成的请求 ID 格式：`req_` + 16进制随机数
 
 ### 分页
 - 查询参数 page、page_size；默认 page=1、page_size=20
@@ -167,19 +190,22 @@ OryxOS 对外暴露统一的 JSON 信封、稳定的错误码、一致的请求�
 ```mermaid
 sequenceDiagram
 participant C as "客户端"
-participant M as "中间件"
+participant M as "中间件链"
 participant H as "Handler"
 participant R as "响应封装"
 C->>M : "HTTP 请求"
-M->>M : "校验/生成 X-Request-ID"
+M->>M : "RequestID : 校验/生成 X-Request-ID"
+M->>M : "RequestBodyLimit : 限制请求体大小"
 M->>H : "转发请求"
 H->>R : "Success/Error/Page"
+R->>R : "ensureRequestID : 注入 request_id"
 R-->>C : "JSON 信封 + X-Request-ID"
+M->>M : "AccessObservation : 记录指标和日志"
 ```
 
 **图表来源**
 - [request_id.go:13-24](file://internal/web/middleware/request_id.go#L13-L24)
-- [result.go:65-111](file://internal/web/api/result.go#L65-L111)
+- [result.go:149-157](file://internal/web/api/result.go#L149-L157)
 - [access.go:13-33](file://internal/web/middleware/access.go#L13-L33)
 
 **章节来源**
@@ -195,11 +221,19 @@ Web Service 在 OryxOS 中承担"进程边界"的 HTTP 入口职责，与应用�
 - Foundation 组装 Server 与 Application，注入配置、观察者、日志器与监听工厂
 - Application 按注册顺序启动组件，设置就绪标志，等待终止信号后反向关闭组件
 - Server 支持优雅关闭，并在错误通道上报非正常终止错误
+- 监听工厂支持测试替换，便于单元测试
 
 ### 可观测性与审计
 - AccessObservation 记录方法、路由、状态码、耗时，并通过 Observer 上报 HTTP 指标
 - RequestID 中间件确保每个请求具备稳定追踪 ID，便于跨层排查
+- Recovery 中间件捕获未处理的 panic，转换为安全的错误响应
 - 所有请求都带有 X-Request-ID 头，用于链路追踪
+
+### 安全与防护
+- 请求体大小限制为 1MB，防止内存耗尽攻击
+- 严格的请求 ID 格式验证，防止注入攻击
+- 统一的错误响应格式，避免信息泄露
+- 详细的访问日志记录，便于安全审计
 
 ### 集成建议
 - 将 HTTPS、限流、鉴权放在反向代理或网关层终止；核心阶段默认内网可信部署
@@ -213,7 +247,7 @@ sequenceDiagram
 participant Proc as "进程"
 participant App as "Application"
 participant Srv as "Server"
-participant MW as "中间件"
+participant MW as "中间件链"
 participant H as "Handler"
 Proc->>App : "Run()"
 App->>Srv : "Start(ctx)"
@@ -237,3 +271,5 @@ Srv-->>Proc : "优雅退出"
 - [application.go:19-183](file://internal/app/application.go#L19-L183)
 - [component.go:12-117](file://internal/web/component.go#L12-L117)
 - [access.go:1-34](file://internal/web/middleware/access.go#L1-L34)
+- [body_limit.go:9-21](file://internal/web/middleware/body_limit.go#L9-L21)
+- [recovery.go:12-30](file://internal/web/middleware/recovery.go#L12-L30)

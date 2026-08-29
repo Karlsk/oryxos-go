@@ -3,7 +3,7 @@ schema_version: 1
 locale: zh-CN
 branch: main
 nodes_managed: true
-exported_at: "2026-08-29T11:03:29Z"
+exported_at: "2026-08-29T15:01:55Z"
 modules:
     "":
         dir_name: OryxOS Agent 操作系统根模块
@@ -23,8 +23,8 @@ modules:
         depends_on: []
         related_to: []
     cmd_oryxos:
-        dir_name: OryxOS CLI 入口与命令树
-        title: OryxOS CLI 入口与命令树
+        dir_name: OryxOS CLI 命令行入口
+        title: OryxOS CLI 命令行入口
         scope:
             - cmd/oryxos/
         source_files: []
@@ -34,8 +34,8 @@ modules:
             - path: internal_core
             - path: internal_web
     docs:
-        dir_name: OryxOS 课程文档与规范仓库
-        title: OryxOS 课程文档与规范仓库
+        dir_name: OryxOS 工程文档与课程资料
+        title: OryxOS 工程文档与课程资料
         scope:
             - docs/
         source_files: []
@@ -56,8 +56,8 @@ modules:
         related_to:
             - path: internal_runtime
     internal_core:
-        dir_name: 进程应用编排与配置_可观测性基础设施
-        title: 进程应用编排与配置/可观测性基础设施
+        dir_name: 进程应用编排与配置_可观测性装配层
+        title: 进程应用编排与配置/可观测性装配层
         scope:
             - internal/app/
             - internal/bootstrap/
@@ -94,8 +94,8 @@ modules:
         related_to:
             - path: internal_runtime
     internal_web:
-        dir_name: HTTP 基础服务与统一 API 契约
-        title: HTTP 基础服务与统一 API 契约
+        dir_name: 基础 HTTP 服务器与统一响应信封
+        title: 基础 HTTP 服务器与统一响应信封
         scope:
             - internal/web/
         source_files: []

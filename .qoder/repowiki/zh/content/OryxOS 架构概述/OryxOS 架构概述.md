@@ -4,6 +4,8 @@
 **本文引用的文件**   
 - [main.go](file://cmd/oryxos/main.go)
 - [root.go](file://cmd/oryxos/root.go)
+- [commands.go](file://cmd/oryxos/commands.go)
+- [workspace.go](file://cmd/oryxos/workspace.go)
 - [application.go](file://internal/app/application.go)
 - [foundation.go](file://internal/app/foundation.go)
 - [config.go](file://internal/config/config.go)
@@ -14,6 +16,14 @@
 - [TechnicalSolution.md](file://docs/TechnicalSolution.md)
 - [第17节：ReAct 原理解析、实现与代码讲解.md](file://docs/class/第17节：ReAct 原理解析、实现与代码讲解.md)
 </cite>
+
+## 更新摘要
+**所做更改**
+- 增强了应用生命周期管理，引入组件化架构设计
+- 改进了CLI命令结构，使用Cobra框架构建完整的命令树
+- 添加了全面的Workspace管理系统，支持工作区初始化和状态检查
+- 详细描述了新的Application结构体，负责组件注册、协调启动/关闭和终端错误处理
+- 更新了架构图表以反映新的组件化设计
 
 ## 架构目标与约束
 
@@ -28,19 +38,21 @@ OryxOS 是用 Go 1.26 实现的面向企业场景的 Agent OS，部署在企业�
 
 ## 逻辑分层
 
-OryxOS 采用“接入层 → 应用层 → Agent Runtime → 集成层 → 存储层”的分层结构，确保职责清晰、依赖方向稳定。
+OryxOS 采用"接入层 → 应用层 → Agent Runtime → 集成层 → 存储层"的分层结构，确保职责清晰、依赖方向稳定。
 
 ```mermaid
 flowchart TB
 subgraph "接入层"
-CLI["CLI Channel"]
+CLI["CLI Channel (Cobra)"]
 WEB["Gin REST API"]
 SCH["AgentScheduler"]
 end
 subgraph "应用层"
+APP["Application (组件协调器)"]
 AS["AgentService"]
 REG["ProfileRegistry"]
 SS["SessionService"]
+WS["WorkspaceManager"]
 end
 subgraph "Agent Runtime"
 REACT["ReActLoop"]
@@ -59,11 +71,13 @@ MD["Bootstrap / Skill / MEMORY.md"]
 DB["SQLite: 3 tables"]
 LOG["JSON Logs"]
 end
-CLI --> AS
-WEB --> AS
-SCH --> AS
-AS --> REG
-AS --> SS
+CLI --> APP
+WEB --> APP
+SCH --> APP
+APP --> AS
+APP --> REG
+APP --> SS
+APP --> WS
 AS --> REACT
 REACT --> PROMPT
 REACT --> PF
@@ -75,7 +89,7 @@ REG --> YAML
 PROMPT --> MD
 SS --> DB
 REACT --> DB
-AS --> LOG
+APP --> LOG
 ```
 
 **图表来源**
@@ -84,6 +98,8 @@ AS --> LOG
 ### 启动与生命周期
 
 进程入口位于 `cmd/oryxos/main.go`，通过 Cobra 构建根命令树，并调用 `Application.Run` 管理组件生命周期。`Application` 负责按注册顺序启动组件、监听终止信号、收集终端错误，并按逆序关闭已启动组件。
+
+**新增** 引入了组件化架构，所有服务组件都实现统一的 `Component` 接口，由 Application 统一管理其生命周期。
 
 ```mermaid
 sequenceDiagram
@@ -127,6 +143,8 @@ App->>Obs : SetReady(false)
 
 `Application` 是所有组件的统一编排者。它维护组件列表、记录已启动组件、监听进程信号，并在退出时按逆序关闭组件。任何实现 `Component` 接口的组件都必须提供 `Start` 和 `Close`，可选实现 `TerminalSource` 来上报非正常服务错误。
 
+**增强** 新增了终端错误处理机制，通过 `TerminalSource` 接口收集组件的非正常服务错误，实现优雅的错误传播和处理。
+
 ```mermaid
 classDiagram
 class Component {
@@ -159,6 +177,28 @@ Application --> TerminalSource : "收集终端错误"
 
 **章节来源**
 - [application.go:19-179](file://internal/app/application.go#L19-L179)
+
+### Workspace Manager：工作区管理系统
+
+**新增** Workspace Manager 提供了完整的工作区初始化和管理功能，确保项目结构的完整性和一致性。
+
+```mermaid
+flowchart TD
+Init["InitializeWorkspace"] --> Check["检查工作区状态"]
+Check --> CreateDirs["创建必需目录"]
+Check --> CreateFiles["创建必需文件"]
+CreateDirs --> Validate["验证权限和结构"]
+CreateFiles --> Validate
+Validate --> Status["WorkspaceStatus"]
+Status --> Initialized["initialized"]
+Status --> NotInitialized["not_initialized"]
+```
+
+**图表来源**
+- [workspace.go:72-137](file://cmd/oryxos/workspace.go#L72-L137)
+
+**章节来源**
+- [workspace.go:1-305](file://cmd/oryxos/workspace.go#L1-L305)
 
 ### Web Server：HTTP 接入与中间件链
 
@@ -340,7 +380,16 @@ OryxOS 明确划分了不同层次的职责边界：
 - **工具边界**：ToolRegistry 和 ToolExecutor 统一管理工具发现和执行
 - **存储边界**：Session、LLM 调用、工具调用记录通过统一 Store 接口访问
 
-### 2. 配置即行为
+### 2. 组件化架构
+
+**新增** 采用组件化设计模式，所有服务组件都实现统一的 `Component` 接口：
+
+- **统一接口**：`Start` 和 `Close` 方法定义组件生命周期
+- **集中管理**：`Application` 负责组件的注册、启动和关闭
+- **错误传播**：通过 `TerminalSource` 接口实现组件错误向上传播
+- **优雅降级**：单个组件失败不影响其他组件正常运行
+
+### 3. 配置即行为
 
 Profile YAML 是运行时配置的唯一来源，定义了 Agent 的行为模式：
 
@@ -349,7 +398,7 @@ Profile YAML 是运行时配置的唯一来源，定义了 Agent 的行为模式
 - **配置验证**：启动阶段完成所有配置校验，避免运行时错误
 - **热重载**：核心阶段通过重启生效，不实现在线热替换
 
-### 3. 可观测性优先
+### 4. 可观测性优先
 
 从第一天开始就建立完整的可观测性体系：
 
@@ -358,7 +407,7 @@ Profile YAML 是运行时配置的唯一来源，定义了 Agent 的行为模式
 - **性能指标**：Observer 记录 HTTP 请求统计和服务就绪状态
 - **调用审计**：每次模型调用和工具执行都记录到数据库
 
-### 4. 安全沙箱机制
+### 5. 安全沙箱机制
 
 Sandbox 是统一的应用层校验机制，不是容器隔离：
 
@@ -367,7 +416,7 @@ Sandbox 是统一的应用层校验机制，不是容器隔离：
 - **URL 白名单**：HTTP 请求的目标域名需要白名单控制
 - **资源限制**：所有外部调用都有超时和输入输出大小限制
 
-### 5. 渐进式扩展
+### 6. 渐进式扩展
 
 核心阶段聚焦最小可行产品，扩展能力预留接口：
 
@@ -376,7 +425,7 @@ Sandbox 是统一的应用层校验机制，不是容器隔离：
 - **向后兼容**：新特性通过插件机制添加，不影响现有功能
 - **配置演进**：Profile 结构支持新增字段，保持向后兼容
 
-### 6. 错误处理策略
+### 7. 错误处理策略
 
 系统采用一致的错误处理模式：
 
@@ -384,5 +433,14 @@ Sandbox 是统一的应用层校验机制，不是容器隔离：
 - **运行时错误**：区分可重试和不可重试错误
 - **网络错误**：统一归一化为标准错误类型
 - **优雅降级**：部分功能失败不影响整体服务可用性
+
+### 8. Workspace 管理
+
+**新增** 提供完整的工作区管理功能：
+
+- **标准化结构**：强制的项目目录结构和文件权限
+- **原子操作**：使用临时文件和链接确保文件操作的原子性
+- **状态检查**：提供工作区状态检测和维护功能
+- **安全验证**：防止符号链接攻击和不安全的文件操作
 
 这些设计原则确保了 OryxOS 在保持简洁的同时，具备足够的灵活性和扩展性来适应企业级应用场景的需求。

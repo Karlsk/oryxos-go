@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: cmd_oryxos
-title: OryxOS CLI 入口与命令树
+title: OryxOS CLI 命令行入口
 scope:
     - cmd/oryxos/
 source_files: []

@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: internal_agent
+title: 内部扩展点占位包（memory/provider/skill/channel/cli）
+scope:
+    - internal/memory/
+    - internal/provider/
+    - internal/skill/
+    - internal/channel/cli/
+source_files: []
+depends_on: []
+related_to:
+    - path: internal_runtime

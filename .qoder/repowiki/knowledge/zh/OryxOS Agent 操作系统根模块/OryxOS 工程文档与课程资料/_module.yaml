@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: docs
-title: OryxOS 课程文档与规范仓库
+title: OryxOS 工程文档与课程资料
 scope:
     - docs/
 source_files: []
