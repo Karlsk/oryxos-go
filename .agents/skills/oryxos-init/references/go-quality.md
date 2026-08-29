@@ -122,13 +122,14 @@ pins in `docs/DevelopmentGuide.md`.
 ## Go tool directives
 
 The generated Go 1.26 `go.mod` uses exact requirements and tool directives for Go-distributed
-tools, which are invoked with `go tool`:
+tools, which are invoked with `go tool`. `go mod tidy` canonically marks tool-only requirements
+as `// indirect`; that status is required to remain tidy and does not weaken the exact pins:
 
 ```go
 require (
-	github.com/securego/gosec/v2 v2.28.0
-	golang.org/x/tools v0.49.0
-	golang.org/x/vuln v1.7.0
+	github.com/securego/gosec/v2 v2.28.0 // indirect
+	golang.org/x/tools v0.49.0 // indirect
+	golang.org/x/vuln v1.7.0 // indirect
 )
 
 tool (

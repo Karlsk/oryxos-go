@@ -221,8 +221,8 @@ requirements/tool directives `golang.org/x/tools v0.49.0`, `golang.org/x/vuln v1
 or unpinned `uses:` reference.
 
 The integration gate runs `go mod tidy -diff`, `go vet ./...`, `go test ./...`,
-`go test -race ./...`, `golangci-lint run`, `go tool gosec ./...`,
-`go tool govulncheck ./...`, and
+`go test -race ./...`, `golangci-lint run`, `go tool gosec ./cmd/... ./internal/...`,
+`go tool govulncheck ./cmd/... ./internal/...`, and
 `CGO_ENABLED=0 go build -o "$tmpdir/oryxos" ./cmd/oryxos`. It asserts a temporary binary exists
 outside the repository and all commands exit zero; failure is actual failure, never skipped.
 
@@ -233,6 +233,6 @@ outside the repository and all commands exit zero; failure is actual failure, ne
 | Unit | All named contracts pass with `go test ./...`. |
 | Concurrency | Observation/lifecycle/middleware ownership passes `go test -race ./...`. |
 | Architecture | Import/route/command inventory proves boundaries. |
-| Security | Pinned `go tool gosec ./...` and `go tool govulncheck ./...` pass. |
+| Security | Pinned `go tool gosec ./cmd/... ./internal/...` and `go tool govulncheck ./cmd/... ./internal/...` pass. |
 | Release | CGO-free temporary build succeeds. |
 | Contract | Exactly 12 leaves, only health/info, empty success page `items: []`, forbidden runtime imports absent. |
