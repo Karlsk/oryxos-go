@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: internal_web
+title: HTTP 基础服务与统一 API 契约
+scope:
+    - internal/web/
+source_files: []
+depends_on: []
+related_to:
+    - path: cmd_oryxos
+    - path: internal_core

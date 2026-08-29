@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: ""
+title: OryxOS Agent 操作系统根模块
+scope:
+    - go.mod
+    - go.sum
+source_files: []
+depends_on: []
+related_to: []

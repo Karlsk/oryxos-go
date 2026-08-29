@@ -1,0 +1,77 @@
+version: 1
+
+scope:
+  include:
+    - "cmd/**"
+    - "internal/**"
+    - "docs/**"
+    - "go.mod"
+    - "go.sum"
+  exclude:
+    - ".agents/**"
+    - ".claude/**"
+    - ".github/**"
+    - ".idea/**"
+    - ".specify/**"
+    - ".superpowers/**"
+    - "node_modules/**"
+
+repowiki:
+  template: "architecture"
+  notes:
+    - text: "OryxOS 是用 Go 1.26 实现的面向企业场景的 Agent OS，部署在企业自己的 K8s、服务器或虚拟机上，作为统一底座运行多个业务 Agent。"
+    - text: "核心阶段交付的是 Agent OS 的运行时内核，不是治理能力完备的企业平台。多租户、SSO、RBAC、完整审计、Provider fallback、多 IM Channel 和集群高可用都属于扩展阶段。"
+    - text: "技术栈包括：Go 1.26+、自实现 ReAct Loop、Eino core model.ToolCallingChatModel、Gin、Cobra、GORM + pure Go SQLite、官方 MCP Go SDK、robfig/cron/v3、log/slog。"
+    - text: "关键设计原则：自实现 ReAct Loop、Eino core 是运行时边界、Provider 工厂按厂商映射、Agent = Profile + Skill、调用记录 Day One 写入、Sandbox 是统一应用层校验。"
+    - text: "核心阶段数字固定：2 个 Provider、9 个内置 Tool、10 个 REST 端点、12 个 CLI 命令、3 张 SQLite 核心表、2 个验收 Demo。"
+  documents:
+    - title: "OryxOS 架构概述"
+      goal: "介绍 OryxOS 的整体架构设计、核心组件和交互关系"
+      template: |
+        ## 架构目标与约束
+        ## 逻辑分层
+        ## 核心组件
+        ## 依赖关系
+        ## 设计原则
+    - title: "核心模块详解"
+      goal: "深入分析 OryxOS 的核心模块实现和工作机制"
+      template: |
+        ## Provider 与 Eino 集成
+        ## ReAct Runtime
+        ## Memory 与 Session 上下文
+        ## Tool、MCP 与 Sandbox
+        ## Web Service
+    - title: "配置与初始化"
+      goal: "详细说明 OryxOS 的配置加载、工作区初始化和 Profile 管理"
+      template: |
+        ## 配置加载规则
+        ## 工作区结构
+        ## Profile YAML 结构
+        ## 初始化流程
+    - title: "数据持久化"
+      goal: "介绍 OryxOS 的数据存储设计，包括 SQLite 核心表和文件系统"
+      template: |
+        ## SQLite 选型与单二进制
+        ## 核心阶段三张表
+        ## 会话上下文管理
+        ## 并发一致性
+    - title: "Web Service API"
+      goal: "详细说明 OryxOS 的 REST API 设计、端点定义和实现细节"
+      template: |
+        ## Handler 结构
+        ## 核心阶段 10 个端点
+        ## API 约定
+        ## 业务系统集成场景
+
+knowledgecard:
+  notes:
+    - text: "OryxOS 采用清晰的依赖方向：cmd -> app -> handler/channel/scheduler -> service/runtime -> Eino core interfaces + domain ports"
+    - text: "核心模块边界明确：runtime 不得导入 Gin、Cobra、GORM 或 Eino-ext；web 不得直接访问 Provider connector 或 Store 实现"
+    - text: "Agent 的组成公式：Agent = Profile（怎么运行） + Skill（做什么）"
+    - text: "Session 身份规则：stateful CLI/Web: channel + user_id + profile.name；stateless invoke: channel='http_invoke' + user_id=request_id + profile.name；scheduler: channel='scheduler' + user_id=schedule.id + profile.name"
+    - text: "Tool 体系包含三档：零代码（SKILL.md + MCP）、轻代码（自建 MCP server）、重代码（Go Tool 接口实现）"
+    - text: "Sandbox 是统一应用层校验，不是容器强隔离，包括：路径规范化、白名单校验、超时限制、输入输出大小限制"
+    - text: "核心链路同步、Tool 串行执行，不得为了'高性能'提前引入复杂异步编排"
+    - text: "配置变更核心阶段重启生效，不实现文件监听或热重载"
+    - text: "SQLite 必须通过 github.com/glebarez/sqlite 使用纯 Go 的 modernc.org/sqlite，不得改用依赖 CGO 的 mattn/go-sqlite3"
+    - text: "发布构建必须通过：CGO_ENABLED=0 go build ./cmd/oryxos"

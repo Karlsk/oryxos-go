@@ -1,0 +1,13 @@
+schema_version: 1
+module_path: internal_runtime
+title: 运行时核心骨架（Runtime/Scheduler/Session/Profile）
+scope:
+    - internal/runtime/
+    - internal/scheduler/
+    - internal/session/
+    - internal/profile/
+source_files: []
+depends_on: []
+related_to:
+    - path: internal_agent
+    - path: internal_tool

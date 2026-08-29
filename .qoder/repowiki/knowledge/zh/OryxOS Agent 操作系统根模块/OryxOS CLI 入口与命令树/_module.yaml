@@ -1,0 +1,10 @@
+schema_version: 1
+module_path: cmd_oryxos
+title: OryxOS CLI 入口与命令树
+scope:
+    - cmd/oryxos/
+source_files: []
+depends_on: []
+related_to:
+    - path: internal_core
+    - path: internal_web

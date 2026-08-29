@@ -1,0 +1,106 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-08-29T11:03:29Z"
+modules:
+    "":
+        dir_name: OryxOS Agent 操作系统根模块
+        title: OryxOS Agent 操作系统根模块
+        scope:
+            - go.mod
+            - go.sum
+        source_files: []
+        children:
+            - cmd_oryxos
+            - docs
+            - internal_agent
+            - internal_core
+            - internal_runtime
+            - internal_tool
+            - internal_web
+        depends_on: []
+        related_to: []
+    cmd_oryxos:
+        dir_name: OryxOS CLI 入口与命令树
+        title: OryxOS CLI 入口与命令树
+        scope:
+            - cmd/oryxos/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: internal_core
+            - path: internal_web
+    docs:
+        dir_name: OryxOS 课程文档与规范仓库
+        title: OryxOS 课程文档与规范仓库
+        scope:
+            - docs/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    internal_agent:
+        dir_name: 内部扩展点占位包（memory_provider_skill_channel_cli）
+        title: 内部扩展点占位包（memory/provider/skill/channel/cli）
+        scope:
+            - internal/memory/
+            - internal/provider/
+            - internal/skill/
+            - internal/channel/cli/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: internal_runtime
+    internal_core:
+        dir_name: 进程应用编排与配置_可观测性基础设施
+        title: 进程应用编排与配置/可观测性基础设施
+        scope:
+            - internal/app/
+            - internal/bootstrap/
+            - internal/config/
+            - internal/observability/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: cmd_oryxos
+            - path: internal_web
+    internal_runtime:
+        dir_name: 运行时核心骨架（Runtime_Scheduler_Session_Profile）
+        title: 运行时核心骨架（Runtime/Scheduler/Session/Profile）
+        scope:
+            - internal/runtime/
+            - internal/scheduler/
+            - internal/session/
+            - internal/profile/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: internal_agent
+            - path: internal_tool
+    internal_tool:
+        dir_name: Tool 体系占位包（内置工具与 MCP 适配器预留）
+        title: Tool 体系占位包（内置工具与 MCP 适配器预留）
+        scope:
+            - internal/tool/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: internal_runtime
+    internal_web:
+        dir_name: HTTP 基础服务与统一 API 契约
+        title: HTTP 基础服务与统一 API 契约
+        scope:
+            - internal/web/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: cmd_oryxos
+            - path: internal_core
