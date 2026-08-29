@@ -3,11 +3,11 @@ schema_version: 1
 locale: zh-CN
 branch: main
 nodes_managed: true
-exported_at: "2026-08-29T15:01:55Z"
+exported_at: "2026-08-29T16:13:44Z"
 modules:
     "":
-        dir_name: OryxOS Agent 操作系统根模块
-        title: OryxOS Agent 操作系统根模块
+        dir_name: OryxOS Agent 操作系统单 Go Module
+        title: OryxOS Agent 操作系统单 Go Module
         scope:
             - go.mod
             - go.sum
