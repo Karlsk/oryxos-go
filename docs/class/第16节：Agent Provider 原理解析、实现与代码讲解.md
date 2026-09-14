@@ -69,15 +69,7 @@ OryxOS 的第一块核心能力是 Provider，也就是对接大模型（LLM）�
 - **全局层**（`application.yaml`）：声明这个实例上到底接了哪些 provider、每家的凭证从哪个环境变量读。解决的是"连不连得上"的问题。
 - **Profile 层**（每个 Agent 自己的 YAML）：声明这个 Agent 具体用哪个 provider、哪个 model、什么温度。解决的是"这个 Agent 怎么用"的问题。
 
-```yaml
-# application.yaml —— 全局层：声明有哪些 provider、凭证从哪来
-oryxos:
-  providers:
-    - name: deepseek
-      api-key: ${DEEPSEEK_API_KEY}
-    - name: kimi
-      api-key: ${KIMI_API_KEY}
-```
+çç
 
 ```yaml
 # .oryxos/profiles/ops-agent.yaml —— Profile 层：这个 Agent 具体怎么用
