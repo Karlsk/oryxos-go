@@ -10,7 +10,7 @@
 
 核心阶段用 Go 1.26 在 4 周、合计 12 小时内跑通最短闭环：
 
-1. `oryxos init` 初始化工作区，用户编辑 `profiles/default.yaml` 配置 API key 和模型。
+1. `oryxos init` 初始化工作区；管理员在实例级启动配置中声明 Provider 与凭证，用户编辑 `profiles/default.yaml` 选择 Provider 和模型。
 2. Profile 绑定 Provider、Skill、Tool、Bootstrap、Channel 和定时规则，形成可运行 Agent。
 3. CLI、HTTP API、AgentScheduler 统一进入 `AgentService`。
 4. `AgentService` 驱动自研 ReAct 循环，通过 Eino 调用 DeepSeek 或 MiniMax，并执行内置/MCP Tool。
@@ -37,7 +37,7 @@
 
 ### 1.3 明确不采用的旧设计
 
-- 不使用 `.oryxos/agents/<name>/AGENT.md`；Profile YAML 是运行时配置唯一来源，Skill 位于 `.oryxos/skills/`。
+- 不使用 `.oryxos/agents/<name>/AGENT.md`；Profile YAML 是每个 Agent 运行选择的唯一来源，实例级 Provider 连接声明属于进程启动配置，Skill 位于 `.oryxos/skills/`。
 - 不在核心阶段引入 `SqliteMemoryStore`、Mem0、向量库或 Memory 分区。
 - 不在核心阶段创建 `scheduled_tasks`、`task_executions` 表或任务管理 API。
 - 不把 Eino-ext 暴露为业务层接口，也不直接依赖 Eino ADK Agent 封装。
@@ -167,30 +167,41 @@ provider factory -> Eino-ext concrete connector -> vendor API
 
 上层不得保存 Eino-ext 具体类型，也不得让 Handler、Scheduler 或 Tool 直接构造模型 connector。
 
-### 3.2 配置模型
+### 3.2 两层配置模型
 
 ```go
-type ProviderConfig struct {
+type ProviderDefinition struct {
+	Name   string `yaml:"name"`
+	APIKey string `yaml:"api_key"`
+}
+
+type ProfileProviderConfig struct {
 	Name        string  `yaml:"name"`
 	Model       string  `yaml:"model"`
-	APIKey      string  `yaml:"api_key"`
-	BaseURL     string  `yaml:"base_url,omitempty"`
 	Temperature float32 `yaml:"temperature,omitempty"`
+}
+
+// ProviderConfig 是两层配置合并后的工厂输入，不直接对应单个 YAML 节点。
+type ProviderConfig struct {
+	Name        string
+	Model       string
+	APIKey      string
+	Temperature float32
 }
 ```
 
-核心字段与需求文档完全一致：`name`、`model`、`api_key`、可选 `base_url`、可选 `temperature`。核心阶段不增加 fallback、候选模型、路由权重等字段。
+实例级 `ProviderDefinition` 声明 OryxOS 进程启用的明确 Provider，字段只有 `name` 和环境变量注入的 `api_key`。Profile 的 `provider` 段只保存 `name`、`model` 和可选 `temperature`。启动时按 `name` 合并两层配置，为每个 Profile 构造独立模型实例。connector 选择和协议适配由对应 Provider 工厂封装，不进入 `ProviderDefinition` 或合并后的 `ProviderConfig`。DeepSeek 原生 connector 使用自身的官方默认地址；MiniMax 因使用 OpenAI connector，其官方兼容地址由 `minimax` 工厂固定。核心阶段不增加自定义端点、fallback、候选模型、路由权重等字段。
 
 用户初次使用的配置流程是：
 
 1. 执行 `oryxos init`。
-2. 编辑 `.oryxos/profiles/default.yaml` 的 `provider.api_key` 和 `provider.model`。
-3. 推荐把 `api_key` 写成 `${LLM_API_KEY}`，由 `ConfigLoader` 展开环境变量；也允许通过独立本地配置加载。
-4. 缺少变量、模型或 Provider 名称非法时，在启动阶段失败并返回明确字段路径，不能拖到第一次对话才报错。
+2. 在实例级启动配置中声明 DeepSeek/MiniMax，并用 `${DEEPSEEK_API_KEY}`、`${MINIMAX_API_KEY}` 等占位符注入凭证。
+3. 编辑 `.oryxos/profiles/default.yaml` 的 `provider.name`、`provider.model` 和 `provider.temperature`。
+4. 实例级 Provider 声明非法时启动失败；单个 Profile 非法或引用未声明 Provider 时记录脱敏错误并跳过，不阻断其他合法 Profile。
 
 ### 3.3 工厂与实例生命周期
 
-Provider 工厂按 `provider.name` 注册，但模型实例按 `Profile.name` 保存。这样两个 Profile 即使都使用 DeepSeek，也可以拥有不同模型、API key、base URL 和 temperature，不会互相覆盖。
+Provider 工厂按 `provider.name` 注册，但模型实例按 `Profile.name` 保存。这样两个 Profile 即使都使用 DeepSeek，也可以拥有不同模型和 temperature，并保持各自独立的实例生命周期与后续 Tool schema 绑定，不会互相覆盖。
 
 ```go
 type ModelFactory func(
@@ -204,12 +215,39 @@ type ProviderRegistry struct {
 }
 ```
 
+工厂注册按厂商名显式完成；MiniMax 使用 Eino-ext OpenAI connector：
+
+```go
+const miniMaxOpenAIBaseURL = "https://api.minimax.io/v1"
+
+// 工厂注册时，每个 name 对应一个构造函数。
+factories["deepseek"] = func(ctx context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
+	return deepseekmodel.NewChatModel(ctx, &deepseekmodel.ChatModelConfig{
+		APIKey:      cfg.APIKey,
+		Model:       cfg.Model,
+		Temperature: cfg.Temperature,
+	})
+}
+factories["minimax"] = func(ctx context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
+	temperature := cfg.Temperature
+	return openaimodel.NewChatModel(ctx, &openaimodel.ChatModelConfig{
+		APIKey:      cfg.APIKey,
+		Model:       cfg.Model,
+		BaseURL:     miniMaxOpenAIBaseURL,
+		Temperature: &temperature,
+	})
+}
+```
+
+上述字段已按锁定的稳定版 Eino-ext DeepSeek `v0.1.7` 和 OpenAI `v0.1.13` 本地源码核验；Eino core 锁定为 `v0.9.19`。DeepSeek 的 `BaseURL` 为空时，原生 connector 使用自身的官方默认地址，因此无需在 OryxOS 重复定义常量。MiniMax 的固定 URL 是工厂实现细节，不是用户输入；若厂商官方端点发生变化，应通过代码升级和 connector 回归测试更新，而不是由部署配置任意覆盖。
+
 加载过程：
 
 ```text
 ProfileLoader -> 校验 Profile.name 唯一
   -> ProviderRegistry 找到 provider.name 对应工厂
-  -> 工厂读取该 Profile 的完整 ProviderConfig
+  -> 合并实例级 ProviderDefinition 与 ProfileProviderConfig
+  -> 工厂读取合并后的 ProviderConfig
   -> 创建 ToolCallingChatModel
   -> 以 Profile.name 注册模型实例
 ```
@@ -218,8 +256,8 @@ ProfileLoader -> 校验 Profile.name 唯一
 
 ### 3.4 DeepSeek 与 MiniMax
 
-- **DeepSeek**：使用 Eino-ext DeepSeek connector，工厂返回 `model.ToolCallingChatModel`。
-- **MiniMax**：使用 Eino-ext OpenAI connector，配置 MiniMax 官方 OpenAI 兼容 base URL 和模型名；中国区、国际区地址由 Profile 的 `base_url` 明确选择，不在代码中猜测账号区域。
+- **DeepSeek**：使用 Eino-ext DeepSeek connector，不传 `BaseURL`，沿用 connector 的官方默认地址，工厂返回 `model.ToolCallingChatModel`。
+- **MiniMax**：使用 Eino-ext OpenAI connector，工厂固定配置 MiniMax 官方 OpenAI 兼容 API 地址；用户只提供 API key，模型名和 temperature 仍由 Profile 选择。
 - 两条路径都要验证 Function Calling、多轮 Tool 消息累积、错误归一化和 token 记录。
 - Web 核心接口只做同步响应；connector 的 Stream 能力作为兼容性回归项，不等于核心阶段提供 SSE。
 
@@ -239,7 +277,7 @@ import (
 
 Provider 适配层统一返回可判别错误类别：配置错误、认证错误、限流、超时、上游服务错误、响应格式错误。核心阶段不自动切换 Provider；错误返回 Agent 或调用方。
 
-每次模型调用尝试无论成功或失败都记录结构化日志并写 `llm_calls`，至少包含 Session、Provider、模型、token 和耗时。失败或 connector 无法提供准确 token 时，token 字段允许为 0；失败原因和 `usage_available=false` 写入结构化日志，不为此扩充核心表字段。
+每次模型调用尝试无论成功或失败都记录结构化日志并写 `llm_calls`，至少包含 Session、Provider、模型、token、成功状态、失败原因和耗时。失败或 connector 无法提供准确 token 时，token 字段允许为 0；失败记录写 `success=false` 和脱敏后的 `error_message`，结构化日志同时写错误类别与 `usage_available=false`。
 
 ---
 
@@ -524,8 +562,6 @@ identity:
 provider:
   name: deepseek
   model: deepseek-chat
-  api_key: ${LLM_API_KEY}
-  base_url: ""
   temperature: 0.7
 
 tools:
@@ -555,24 +591,24 @@ settings:
   max_history_turns: 20
 ```
 
-`oryxos init` 后，用户直接编辑此文件配置 API key 和模型。推荐使用 `${LLM_API_KEY}`，但流程入口仍然是编辑 `default.yaml`，不是另设 Provider 配置中心。
+`oryxos init` 后，用户直接编辑此文件选择 Provider、模型和 temperature。API key 来自实例级启动配置，端点策略由对应 Provider 工厂封装；启动配置不属于 `.oryxos/` 初始化制品，因此工作区仍保持五个子目录和六个初始文件。
 
 ### 8.3 配置加载流水线
 
 ```mermaid
 flowchart LR
-    A["读取 YAML"] --> B["展开环境变量占位符"]
-    B --> C["严格反序列化"]
-    C --> D["字段与引用校验"]
-    D --> E["Profile name 唯一性校验"]
-    E --> F["构造 Provider / Tool / MCP"]
-    F --> G["注册 ProfileRuntime"]
+    A["读取实例级启动配置"] --> B["展开 Provider 凭证环境变量"]
+    B --> C["严格解析 Provider 声明"]
+    C --> D["逐个严格解析 Profile YAML"]
+    D --> E["校验 Provider 引用与 Profile name"]
+    E --> F["为合法 Profile 构造 Provider / Tool / MCP"]
+    F --> G["按 Profile.name 注册 ProfileRuntime"]
 ```
 
 加载器职责：
 
-- `ConfigLoader`：安全读取文件并展开环境变量；日志不得打印展开后的密钥。
-- `ProfileLoader`：严格解析 YAML，拒绝未知关键字段，校验 name、Provider、cron、通知渠道和设置范围。
+- `ConfigLoader`：安全读取实例级启动配置和 Profile YAML，并展开其中允许使用的环境变量；Provider 声明错误时 fail-fast，日志不得打印展开后的密钥。
+- `ProfileLoader`：逐个严格解析展开后的 Profile YAML，拒绝未知关键字段，校验 name、Provider、cron、通知渠道和设置范围；单个坏文件或缺失变量记录脱敏错误并跳过，不阻断其他合法 Profile。
 - `SkillLoader`：只加载 Profile 引用的 SKILL.md，校验文件存在。
 - `McpConfigLoader`：解析 MCP 定义，校验名称唯一和 transport 所需字段。
 - `BootstrapLoader`：按 Profile 指定顺序加载 Bootstrap；未指定时使用默认三文件。
@@ -587,7 +623,7 @@ type Profile struct {
 	Name           string           `yaml:"name"`
 	Description    string           `yaml:"description"`
 	Identity       IdentityConfig   `yaml:"identity"`
-	Provider       ProviderConfig   `yaml:"provider"`
+	Provider       ProfileProviderConfig `yaml:"provider"`
 	Tools          []string         `yaml:"tools"`
 	Skills         []string         `yaml:"skills"`
 	MCPServers     []string         `yaml:"mcp_servers"`
@@ -603,8 +639,8 @@ type Profile struct {
 
 ### 8.5 密钥规则
 
-- 核心阶段支持 `${ENV_VAR}` 注入或独立本地配置，不把真实密钥提交到 Profile。
-- 缺失环境变量必须报出变量名和 Profile 名，但不得打印其他凭证。
+- 核心阶段在实例级启动配置中使用 `${ENV_VAR}` 注入，不把真实密钥提交到 Profile。
+- 缺失环境变量必须报出变量名和 Provider 名，但不得打印其他凭证。
 - `api_key`、Webhook URL、MCP auth 在日志和错误详情中统一脱敏。
 - 加密存储、密钥轮转、Vault/KMS 集成属于扩展阶段。
 
@@ -757,6 +793,8 @@ CGO_ENABLED=0 go build ./cmd/oryxos
 | `prompt_tokens` | INTEGER NOT NULL DEFAULT 0 |
 | `completion_tokens` | INTEGER NOT NULL DEFAULT 0 |
 | `total_tokens` | INTEGER NOT NULL DEFAULT 0 |
+| `success` | BOOLEAN NOT NULL |
+| `error_message` | TEXT NULL |
 | `duration_ms` | INTEGER NOT NULL |
 | `created_at` | DATETIME NOT NULL |
 
@@ -766,7 +804,7 @@ CGO_ENABLED=0 go build ./cmd/oryxos
 
 - 启用 WAL 和合理的 `busy_timeout`，降低并发读写冲突。
 - 使用应用层 per-session 锁配合短事务，不在数据库事务内调用 LLM 或 Tool。
-- 启动时自动迁移仅限上述三表；迁移失败则服务不进入 ready。
+- 启动时只执行仓库维护的三表 SQL migration，不使用 GORM `AutoMigrate`；迁移失败则服务不进入 ready。
 - SQLite 文件和日志目录权限按运行用户最小化设置。
 
 ---
@@ -827,7 +865,8 @@ oryxos init
   -> 创建 mcp_servers.yaml
   -> 创建 profiles/default.yaml
   -> 若目标文件已存在则不覆盖，汇报 skipped/created
-用户编辑 default.yaml 的 provider.api_key 和 provider.model
+管理员在实例级启动配置中声明 Provider 和 API key 环境变量；端点策略由 Provider 工厂封装
+用户编辑 default.yaml 的 provider.name、provider.model 和 provider.temperature
 ```
 
 ### 12.2 Profile 创建与启动
@@ -838,9 +877,10 @@ oryxos profile create <name>
   -> 生成 profiles/<name>.yaml 模板（不创建 Agent 目录）
 用户编辑 Profile，并按需在 skills/ 添加 SKILL.md
 oryxos chat --profile <name>
-  -> ConfigLoader 展开环境变量
-  -> ProfileLoader/SkillLoader/McpConfigLoader 校验引用
-  -> ProviderFactory 创建该 Profile 的 ToolCallingChatModel
+  -> ConfigLoader 展开实例级 Provider 凭证环境变量
+  -> ProfileLoader 逐个校验，坏 Profile 记录错误并跳过
+  -> SkillLoader/McpConfigLoader 校验合法 Profile 的引用
+  -> ProviderFactory 合并两层配置并创建该 Profile 的 ToolCallingChatModel
   -> ToolRegistry 组装内置 + MCP + Go Tools
   -> PromptBuilder 加载 Bootstrap、Skill、MEMORY.md
   -> 进入 AgentService 对话链
@@ -963,7 +1003,7 @@ cron 到点 -> AgentService -> ReAct -> http_get 查询天气
 
 ### 15.2 可靠性
 
-- Profile 与 MCP 配置在启动时 fail-fast，避免部分加载。
+- 实例级 Provider 与 MCP 连接配置在启动时 fail-fast；单个坏 Profile 隔离失败并跳过，其他合法 Profile 可继续加载。
 - Provider 故障核心阶段直接报错，不做 fallback。
 - Tool 重试受可重试性和幂等性双重约束。
 - Scheduler 单任务隔离，panic 在任务边界恢复并记录，不能终止调度器。
@@ -971,7 +1011,7 @@ cron 到点 -> AgentService -> ReAct -> http_get 查询天气
 
 ### 15.3 安全
 
-- API key、MCP auth、Webhook 凭证通过环境变量或独立本地配置加载并脱敏。
+- API key 通过实例级启动配置中的环境变量占位加载；MCP auth、Webhook 凭证同样通过环境变量加载并脱敏。
 - 核心阶段 API 假设可信内网；HTTPS 由反向代理终止。
 - 文件、命令、URL 都经过应用层 Sandbox；这不等价于生产级强隔离。
 - 完整认证、RBAC、SSO、容器 Sandbox、KMS/Vault 属于扩展阶段。
@@ -995,8 +1035,9 @@ Prometheus `/metrics` 属于扩展端点，核心阶段不把它混入 10 个 AP
 
 ### 16.1 单元测试
 
-- Profile 严格解析、环境变量展开、缺失/重复引用。
-- Provider 工厂按厂商选实现、按 Profile 隔离实例。
+- 实例级 Provider 声明严格解析、环境变量展开和缺失凭证校验。
+- Profile 严格解析、坏文件隔离、缺失/重复引用。
+- Provider 工厂按厂商选实现、按 Profile 隔离实例，并覆盖同一厂商下不同 Profile 不串配置。
 - Prompt 分段顺序、Bootstrap 默认加载、4000 字 Memory 截断。
 - ReAct 无 Tool、有 Tool、多轮 Tool、迭代上限和取消。
 - 九个内置 Tool 的白名单、notify 选择规则和重试判定。
@@ -1048,6 +1089,6 @@ Prometheus `/metrics` 属于扩展端点，核心阶段不把它混入 10 个 AP
 - [官方 MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)
 - [GORM 纯 Go SQLite dialector](https://github.com/glebarez/sqlite)（底层 `modernc.org/sqlite`）
 - [MiniMax OpenAI 兼容 API](https://platform.minimax.io/docs/api-reference/models/openai/list-models)
-- [MiniMax 区域 base URL](https://platform.minimax.io/docs/token-plan/cursor)
+- [MiniMax OpenAI 兼容文本 API](https://platform.minimax.io/docs/api-reference/text-openai-api)
 
 依赖版本在实现阶段写入 `go.mod` 锁定；本文档约束的是调用边界和能力范围，不以浮动的最新版本号作为架构事实。

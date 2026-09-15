@@ -105,14 +105,14 @@ ProviderFactory → Eino-ext connector → Provider API
 ```
 
 - DeepSeek 使用 Eino-ext DeepSeek connector。
-- MiniMax 使用 Eino-ext OpenAI connector，并配置 MiniMax 官方 OpenAI 兼容 base URL。
+- MiniMax 使用 Eino-ext OpenAI connector，并由 `minimax` 工厂固定配置 MiniMax 官方 OpenAI 兼容 base URL。
 - 不得使用 Eino ADK 自动执行 Tool；Tool 调度只能由 `ReActLoop + ToolExecutor` 完成。
 - 上层不得保存或判断 Eino-ext 具体类型。
 - 核心 Web API 只做同步 JSON；connector 的 Stream 回归不等于交付 SSE。
 
 ### 原则三：Provider 工厂按厂商映射，模型实例按 Profile 隔离
 
-Provider 工厂按 `provider.name` 显式注册，模型实例按 `Profile.name` 保存：
+实例级启动配置只声明可用 Provider 及其凭证；Profile 只选择 Provider、模型和 temperature。明确命名的 Provider 必须由自己的工厂封装 connector、协议适配和端点策略，不得要求用户提供或覆盖 `base_url`；原生 connector 已提供官方默认地址时直接沿用。Provider 工厂按 `provider.name` 显式注册，两层配置合并后为每个合法 Profile 创建模型实例，并按 `Profile.name` 保存：
 
 ```go
 type ModelFactory func(
@@ -126,11 +126,12 @@ type ProviderRegistry struct {
 }
 ```
 
-不得只按厂商名复用模型实例。两个 Profile 即使都使用 DeepSeek，也可能使用不同模型、API key、base URL 和 temperature，必须相互隔离。首批只交付 DeepSeek + MiniMax；核心阶段不做 fallback、hedge racing 或动态路由。
+不得只按厂商名复用模型实例。两个 Profile 即使都使用 DeepSeek，也可能使用不同模型和 temperature，并拥有独立的实例生命周期与 Tool schema 绑定，必须相互隔离。首批只交付 DeepSeek + MiniMax；核心阶段不做 fallback、hedge racing 或动态路由。
 
-### 原则四：Agent = Profile + Skill；Profile YAML 是唯一运行时配置源
+### 原则四：Agent = Profile + Skill；Profile YAML 是每个 Agent 运行选择的唯一来源
 
-- Profile 位于 `.oryxos/profiles/<name>.yaml`，定义“怎么运行”。
+- Profile 位于 `.oryxos/profiles/<name>.yaml`，定义“怎么运行”，但不保存 Provider 凭证。
+- 实例级启动配置只声明可用 Provider 及其 `api_key`，不得承载 endpoint、Agent 的模型、Tool、Skill、Channel 或 schedule 选择。
 - Skill 位于 `.oryxos/skills/**/SKILL.md`，定义“做什么、什么时候做”。
 - Profile 通过 `skills` 字段引用 Skill；两者绑定后才是完整业务 Agent。
 - 不创建 `.oryxos/agents/`，不使用单数 `AGENT.md`，不从 Markdown frontmatter 派生 Profile。
@@ -142,7 +143,7 @@ type ProviderRegistry struct {
 
 ### 原则五：调用记录 Day One 写入
 
-核心阶段每次 LLM 调用都写 `llm_calls`，每次 Tool 调用都写 `tool_invocations`。失败调用也必须记录；错误详情进入结构化日志，不能以“日志已经够了”为由跳过数据库记录。
+核心阶段每次 LLM 调用都写 `llm_calls`，每次 Tool 调用都写 `tool_invocations`。失败调用也必须记录；`llm_calls` 使用 `success=false` 和脱敏后的 `error_message` 留下可查询结果，结构化日志记录更完整的错误类别，不能以“日志已经够了”为由跳过数据库记录。
 
 核心阶段不提供完整审计查询、报表或 SIEM 导出，但三张核心表的数据地基必须从第一天存在。
 
@@ -236,7 +237,7 @@ CGO_ENABLED=0 go build ./cmd/oryxos
 
 ### Profile YAML（`.oryxos/profiles/<name>.yaml`）
 
-Profile 是运行时配置唯一来源。`oryxos init` 后，用户直接编辑 `profiles/default.yaml` 的 `provider.api_key` 和 `provider.model`。
+Profile 是每个 Agent 运行选择的唯一来源。`oryxos init` 后，用户直接编辑 `profiles/default.yaml` 的 `provider.name`、`provider.model` 和 `provider.temperature`；Provider 凭证来自实例级启动配置，端点策略由明确 Provider 的工厂封装。
 
 ```yaml
 name: default
@@ -249,8 +250,6 @@ identity:
 provider:
   name: deepseek
   model: deepseek-chat
-  api_key: ${LLM_API_KEY}
-  base_url: ""
   temperature: 0.7
 
 tools:
@@ -283,11 +282,21 @@ settings:
   max_history_turns: 20
 ```
 
+实例级启动配置另行声明 Provider 及其凭证，不属于 `.oryxos/` 初始化文件：
+
+```yaml
+providers:
+  - name: deepseek
+    api_key: ${DEEPSEEK_API_KEY}
+  - name: minimax
+    api_key: ${MINIMAX_API_KEY}
+```
+
 字段规则：
 
 - `name` 在工作区内唯一；
 - `identity.agent_name` 仅展示；
-- Provider 核心字段固定为 `name/model/api_key/base_url/temperature`；
+- 实例级 Provider 声明字段固定为 `name/api_key`；Profile Provider 段字段固定为 `name/model/temperature`；DeepSeek 工厂沿用原生 connector 默认地址，MiniMax 工厂固定 OpenAI 兼容地址；
 - `tools/skills/mcp_servers` 的引用必须存在且不得重名；
 - `notify_channels` 条目包含 `name/type/url`，其中 `name` 在 Profile 内唯一，`url` 推荐使用环境变量；
 - `schedules` 条目包含 `id/cron/timezone/message/enabled`，其中 `id` 在 Profile 内唯一；
@@ -360,6 +369,8 @@ scheduler:        channel="scheduler" + user_id=schedule.id + profile.name
 | `prompt_tokens` | INTEGER NOT NULL DEFAULT 0 |
 | `completion_tokens` | INTEGER NOT NULL DEFAULT 0 |
 | `total_tokens` | INTEGER NOT NULL DEFAULT 0 |
+| `success` | BOOLEAN NOT NULL |
+| `error_message` | TEXT NULL |
 | `duration_ms` | INTEGER NOT NULL |
 | `created_at` | DATETIME NOT NULL |
 
@@ -522,23 +533,25 @@ oryxos session list
 
 ## 配置加载规则
 
-1. Profile YAML 是 Agent 运行配置唯一来源。
-2. `ConfigLoader` 先读取 YAML，再展开 `${ENV_VAR}`，然后严格反序列化。
-3. 必填项、未知关键字段、Provider、cron、通知渠道、设置范围和引用在启动阶段校验。
-4. 缺失环境变量时报告变量名和 Profile 名，不能打印凭证。
-5. `api_key`、Webhook URL、MCP auth 在日志和错误中脱敏。
-6. `Profile.name`、MCP server name、通知渠道 name 和 schedule id 必须在各自作用域唯一。
-7. Profile 修改后核心阶段重启生效，不做文件监听或热重载。
-8. 加密存储、密钥轮转、Vault/KMS 属于扩展阶段。
+1. Profile YAML 是每个 Agent 的运行选择唯一来源；实例级启动配置只声明 Provider 名称和 API key，Provider 工厂封装 connector 与端点策略。
+2. `ConfigLoader` 读取实例级启动 YAML 和 Profile YAML，展开其中允许使用的 `${ENV_VAR}`，再严格反序列化。
+3. 实例级 Provider 声明非法时启动失败；ProfileLoader 逐个严格解析 Profile，坏文件或缺失变量记录脱敏错误并跳过，不阻断其他合法 Profile。
+4. Profile 的 Provider 引用、cron、通知渠道、设置范围和其他引用在加载该 Profile 时校验；引用未声明 Provider 的 Profile 必须显式失败。
+5. 缺失环境变量时报告变量名和 Provider 名，不能打印凭证。
+6. `api_key`、Webhook URL、MCP auth 在日志和错误中脱敏。
+7. `Profile.name`、Provider name、MCP server name、通知渠道 name 和 schedule id 必须在各自作用域唯一。
+8. 实例级 Provider 或 Profile 修改后核心阶段重启生效，不做文件监听或热重载。
+9. 加密存储、密钥轮转、Vault/KMS 属于扩展阶段。
 
 用户首次使用的固定流程：
 
 ```text
 oryxos init
   → 创建五个目录和六个初始文件
+  → 管理员在实例级启动配置中声明 DeepSeek/MiniMax 和 API key 环境变量
   → 用户编辑 .oryxos/profiles/default.yaml
-  → 配置 provider.api_key 和 provider.model
-  → 启动时 ConfigLoader 展开环境变量并校验
+  → 配置 provider.name、provider.model 和 provider.temperature
+  → 启动时 ConfigLoader 展开 Provider 凭证环境变量并校验
 ```
 
 ---
@@ -594,7 +607,8 @@ oryxos init
 |------|------|------|
 | 使用 Eino ADK 自动 Agent/Tool 执行 | ReAct 控制权丢失或 Tool 重复执行 | 只保留 `ToolCallingChatModel`，由 `ReActLoop + ToolExecutor` 执行 |
 | 业务层直接依赖 Eino-ext | connector 类型散落，升级困难 | Eino-ext 只出现在 `internal/provider` 工厂 |
-| 模型实例只按 provider.name 缓存 | 不同 Profile 的 key/model/base URL 相互覆盖 | 工厂按 provider name，实例按 Profile.name |
+| 模型实例只按 provider.name 缓存 | 同一厂商的不同 Profile 共享实例生命周期和模型绑定 | 工厂按 provider name，实例按 Profile.name |
+| 把凭证同时放进全局配置和 Profile | 出现双份密钥和连接配置漂移 | 全局层只管连接，Profile 只管 Provider/模型/temperature 选择 |
 | 只实现 `tool.BaseTool` | 有 schema 但无法执行 | 实现 `tool.InvokableTool.InvokableRun` |
 | 把 Skill 当成 Tool | Skill 被注册或模型看不到业务指令 | Skill 由 `SkillLoader/PromptBuilder` 加载，不进 Registry |
 | 恢复 `agents/<name>/AGENT.md` | 出现第二配置源，与 Profile 冲突 | 只保留 `profiles/*.yaml + skills/**/SKILL.md` |
@@ -620,7 +634,7 @@ oryxos init
 - **自实现核心，复用管道**：ReAct 自己实现；模型与 Tool 抽象复用 Eino，MCP 协议复用官方 Go SDK。
 - **依赖倒置**：Runtime 依赖 Eino core 和内部端口，外部 connector/数据库/HTTP 框架在边缘。
 - **开放标准**：Tool 对接 MCP，Skill 兼容 agentskills.io 的完整支持放扩展阶段。
-- **状态外置**：Profile/Skill/Bootstrap/Memory 在文件系统，Session 和调用记录在 SQLite。
+- **状态外置**：实例级 Provider 声明与 Profile/Skill/Bootstrap/Memory 在文件系统，Session 和调用记录在 SQLite。
 - **安全是地基**：白名单、超时、最小权限、凭证环境变量和调用记录从第一天存在。
 - **单二进制承诺**：纯 Go SQLite，`CGO_ENABLED=0` 必须持续可构建。
 - **分阶段克制**：核心阶段只做最短闭环，治理、分布式和完整生态延后。

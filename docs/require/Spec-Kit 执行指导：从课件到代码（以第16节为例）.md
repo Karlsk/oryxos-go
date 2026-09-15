@@ -43,7 +43,7 @@
 ### 第 3 步：/speckit-plan（技术方案）
 
 ```text
-/speckit-plan 技术栈：Go 1.26+ + Eino core + Eino-ext（动手前先跑 go mod tidy 确认目标 provider 的 connector 模块能拉取——这是第16节坑三，示例 provider 名不代表依赖一定可用）、SQLite + GORM（glebarez/sqlite + modernc.org/sqlite，纯 Go，CGO_ENABLED=0）。模块落位：Profile 相关归 internal/profile，ProviderService 和适配器归 internal/provider，LlmCall GORM Model 和 Repository 归 internal/store。凭证走环境变量占位 ${XXX_API_KEY}，不落明文。SQLite 用手工建表脚本，不依赖 GORM AutoMigrate。测试策略按课件"四、验收 harness"执行：profile_loader_test.go/provider_service_test.go/tool_schema_adapter_test.go/llm_call_repository_test.go 四个测试文件（mock ToolCallingChatModel，覆盖路由不串台、失败审计落账、自动执行关闭三个关键回归点），加 provider_smoke_test.go 集成冒烟（// +build integration，CI 跳过）；实现完成的定义是 go test ./... 全绿。
+/speckit-plan 技术栈：Go 1.26+ + Eino core + Eino-ext；DeepSeek 使用原生 connector 并沿用其官方默认地址，MiniMax 使用 OpenAI connector 且在工厂内固定官方兼容地址。动手前用 go.mod、模块缓存和 go doc 核实锁定版本的两个 connector API。实例级启动配置只声明 provider 名和环境变量凭证；Profile 只选择 provider/model/temperature；明确 Provider 的 connector、协议适配和端点策略由各自工厂封装，不接受用户配置 base URL。工厂按 provider.name 注册，模型实例按 Profile.name 隔离。SQLite + GORM 使用 glebarez/sqlite + modernc.org/sqlite，保持纯 Go 和 CGO_ENABLED=0；建表使用手工 SQL migration，不依赖 GORM AutoMigrate。模块落位：Profile 相关归 internal/profile，ProviderService 和 connector 工厂归 internal/provider，LlmCall GORM Model、Repository 和 migration 归 internal/store。测试按课件 harness 执行：profile_loader_test.go/provider_service_test.go/tool_schema_adapter_test.go/llm_call_repository_test.go，覆盖 DeepSeek/MiniMax 工厂路由、同厂商 Profile 隔离、坏 Profile 隔离、失败审计落账和不自动执行 Tool；provider_smoke_test.go 使用 //go:build integration，默认 CI 跳过。完成门禁为 go test ./...、go vet ./...、CGO_ENABLED=0 go build ./cmd/oryxos 全绿。
 ```
 
 ### 第 4 步：/speckit-tasks（拆任务）
@@ -68,7 +68,7 @@
 /speckit-implement
 ```
 
-implement 的完成标准就是 harness 全绿（`go test ./...` 通过）——路由不串台、失败审计落账、自动执行关闭这三条硬门槛都有对应的回归测试，机器已经判过卷。跑完后人工只需过课件"五、做完怎么验"的三条：`go mod tidy` 确认 Eino-ext 依赖、配真 key 跑一次 `provider_smoke_test.go` 冒烟、grep 确认无明文 key。
+implement 的完成标准是 harness 与仓库门禁全绿：`go test ./...`、`go vet ./...`、`CGO_ENABLED=0 go build ./cmd/oryxos`。DeepSeek/MiniMax 路由、同厂商 Profile 隔离、失败审计落账、自动执行关闭都有对应回归测试。跑完后人工确认 Eino-ext 依赖、为两个 Provider 配真 key 跑 `provider_smoke_test.go` 冒烟，并检查无明文 key。
 
 ## 四、第16节需求（specify 的输入原文）
 
@@ -80,14 +80,14 @@ implement 的完成标准就是 harness 全绿（`go test ./...` 通过）——
 
 **用户场景。**
 
-1. 同一个 OryxOS 实例上，运维 Agent 用 deepseek、客服 Agent 用 qwen，两者并存、路由不串台。
-2. 管理员想给某个 Agent 换模型，只改它 Profile 里的 `provider`/`model` 字段，不碰任何代码。
+1. 同一个 OryxOS 实例上，运维 Agent 用 DeepSeek、客服 Agent 用 MiniMax（OpenAI 兼容路径），两者并存、路由不串台。
+2. 管理员想给某个 Agent 切换到实例已声明的 Provider，只改它 Profile 里的 `provider`/`model` 字段，不碰任何代码或凭证。
 3. 审计员事后能查到：某次会话调了哪家模型、输入输出各多少 token、耗时多久；某次调用失败了，失败原因是什么。
 
 **功能需求。**
 
 - FR1：每个 Agent 的模型选择由 Profile（YAML）声明——用哪个 provider、哪个 model、什么温度；系统启动时从 `.oryxos/profiles/` 加载全部 Profile，坏文件记错误但不阻断启动。
-- FR2：实例级声明可用的 provider 清单及凭证来源（环境变量占位）；Profile 引用了清单里不存在的 provider 名，必须显式报错，不允许静默跑过。
+- FR2：实例级声明 DeepSeek/MiniMax 清单及凭证来源（环境变量占位）；工厂按 provider 名注册，合并两层配置后为每个 Profile 创建并按 `Profile.name` 保存模型实例。Profile 引用了清单里不存在的 provider 名，必须显式报错，不允许静默跑过。
 - FR3：上层传入 sessionID、Profile、messages（`[]*schema.Message`），系统按 Profile 选中对应模型、发起一次调用、把结果原样返回（`*schema.Message`）。
 - FR4：请求可携带工具的 schema 说明（`[]*schema.ToolInfo`，告诉模型有哪些工具可用）；模型返回"想调某工具"时（`resp.ToolCalls`），该请求原样交回上层——本模块只做翻译，绝不执行工具，必须关掉 Eino ADK 的自动工具执行。
 - FR5：每次调用不论成败都落审计（`llm_calls` 表）：provider、model、token 用量、耗时、success 标识、失败原因，按 session 关联。
@@ -95,9 +95,9 @@ implement 的完成标准就是 harness 全绿（`go test ./...` 通过）——
 
 **明确不做（边界）。** ReAct 循环本身、工具的真正执行、fallback/熔断/hedge racing、成本聚合看板、流式响应——全部属于后续特性。
 
-**验收标准。** 以 `docs/class/第16节` 为准：可自动化的部分由课件"四、验收 harness"的测试套件承载（`go test ./...` 全绿即通过），三条硬门槛——双 provider 按名路由不串台且引用错误名有清晰报错、调用失败后 `llm_calls` 有 `success=false` 带 `error_message` 的记录、带工具的请求确认自动执行已关闭——都有对应的回归测试；harness 覆盖不到的人工项见课件"五、做完怎么验"（Eino-ext 依赖确认、真实冒烟、无明文 key）。
+**验收标准。** 以 `docs/require/第16节` 的唯一匹配课件为准：可自动化部分由课件 harness 承载。硬门槛包括 DeepSeek/MiniMax 工厂路由不串台、同一 Provider 的两个 Profile 实例隔离、引用错误名有清晰报错、坏 Profile 不阻断合法 Profile、调用失败后 `llm_calls` 有 `success=false` 与脱敏 `error_message`、带工具请求不自动执行。人工项包括两个 Eino-ext connector 的本地 API/依赖确认、真实冒烟和无明文 key。
 
-**依赖与假设。** 目标 provider 的 Eino-ext connector 模块在 `go.mod` 里能拉取（动手前先 `go mod tidy` 验证，教程里的 provider 名只是示意）；本模块的直接下游消费者是第 17 节的 ReAct 循环。
+**依赖与假设。** Eino core、Eino-ext DeepSeek connector、Eino-ext OpenAI connector、GORM 与纯 Go SQLite 依赖必须在本地模块版本中核实；MiniMax 通过 OpenAI connector 接入，但其官方 API 地址由 `minimax` 工厂固定封装，实例配置只提供 API key。本模块的直接下游消费者是第 17 节的 ReAct 循环。
 
 ## 五、后续各节照此复制
 

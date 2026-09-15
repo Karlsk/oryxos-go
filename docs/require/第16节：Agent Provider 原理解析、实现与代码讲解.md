@@ -10,7 +10,7 @@ OryxOS 的第一块核心能力是 Provider，也就是对接大模型（LLM）�
 
 一句话：**Provider 就是 Agent 和大模型之间的一个前台。**
 
-上层要跟大模型说话，但它不想操心"这次到底是调 DeepSeek 还是 Kimi、每家的接口格式还不一样"。于是这些事全交给 Provider：上层把要说的话递进去，Provider 负责挑对模型、用对方听得懂的格式发出去、再把回话拿回来。
+上层要跟大模型说话，但它不想操心"这次到底是调 DeepSeek 还是 MiniMax、每家的接口格式还不一样"。于是这些事全交给 Provider：上层把要说的话递进去，Provider 负责挑对模型、用对方听得懂的格式发出去、再把回话拿回来。
 
 放到 Agent 的整体里看会更清楚。我们说 Agent = LLM + Tools + Memory + Loop + Environment，其中 **LLM 是那个做决策的大脑**。Provider 就是把这个大脑接进系统的工程封装——ReAct 循环每转一圈，都要通过 Provider 调一次大模型。
 
@@ -38,11 +38,11 @@ OryxOS 的第一块核心能力是 Provider，也就是对接大模型（LLM）�
 
 **第三，三个坑——这几个直接决定了架构长什么样。**
 
-*坑一：多个 provider 时，怎么区分谁是谁。* 你同时配了 DeepSeek 和 Kimi，它们在 Go 里都是 `model.ToolCallingChatModel` 类型，光靠类型根本分不清哪个是哪个（类型一样，名字也未必对得上）。所以从一开始就得自己维护一张表：**provider 的名字 → 对应的 ToolCallingChatModel**，一一显式对应。
+*坑一：多个 provider 时，怎么区分谁是谁。* 你同时配了 DeepSeek 和 MiniMax，它们在 Go 里都是 `model.ToolCallingChatModel` 类型，光靠类型根本分不清哪个是哪个。工厂必须维护 **provider 名 → 构造函数** 的显式映射；模型实例则按 `Profile.name` 保存，避免两个都使用 DeepSeek 的 Profile 因模型、温度或凭证不同而串配置。
 
 *坑二：Eino 的 ADK 会"自作主张"帮你执行工具。* Eino 的 ADK（Agent Development Kit）自带一套自动执行工具的机制——模型说想调 `http_get`，它会自己跑个小循环，直接把工具执行了，再把结果喂回模型。听起来省事，但我们自己写了 ReActLoop 和 ToolExecutor 来管这件事。两套一起跑，工具会被调两次，而且执行绕过了我们的沙箱检查，出了事都不知道谁干的。所以**必须关掉 ADK 的自动执行**，只留 Eino 的协议转换和 schema 生成，执行权攥在自己手里。
 
-*坑三：教程里的 provider 名字只是示意，那家模型接不接得进来得先验证。* 下面举例的 `deepseek`、`kimi`、`qwen` 都只是"provider 名字"的示意，不代表随手配一下就能用。Eino-ext 生态里每家模型背后都是一个独立的 Go module（比如 DeepSeek 走的是 `github.com/cloudwego/eino-ext/components/model/deepseek`），这些依赖是否在你项目的 `go.mod` 里能拉取、版本号对不对，动手前先跑一遍 `go mod tidy` 确认。**真实踩过的坑**：某些版本的 Eino-ext 未必包含每一家的 connector——想接哪家，先确认依赖能下载、能解析，再当作示例往下写，不要照着教程的名字就假设一定能用。
+*坑三：教程里的 provider 名字不能替代依赖验证。* 核心阶段固定接 DeepSeek 和 MiniMax：DeepSeek 使用 Eino-ext 原生 connector，MiniMax 使用 Eino-ext OpenAI connector 对接官方 OpenAI 兼容 API。动手前必须用 `go.mod`、模块缓存和 `go doc` 核实两个 connector 在锁定版本中的真实构造函数、配置字段和工具调用行为；示例代码不能作为 API 存在性证据。
 
 这三个坑想清楚，Provider 长什么样就定了：一个薄薄的抽象层，只管一次调用，靠一张表显式选模型，关掉自动执行，接哪家提前验证过依赖能用。
 
@@ -69,13 +69,12 @@ OryxOS 的第一块核心能力是 Provider，也就是对接大模型（LLM）�
 - **全局层**（环境变量 + 启动参数）：声明这个实例上到底接了哪些 provider、每家的凭证从哪个环境变量读。解决的是"连不连得上"的问题。
 - **Profile 层**（每个 Agent 自己的 YAML）：声明这个 Agent 具体用哪个 provider、哪个 model、什么温度。解决的是"这个 Agent 怎么用"的问题。
 ```yaml
-# global.yaml —— 全局层：声明有哪些 provider、凭证从哪来
-oryxos:
-  providers:
-    - name: deepseek
-      api-key: ${DEEPSEEK_API_KEY}
-    - name: kimi
-      api-key: ${KIMI_API_KEY}
+# global.yaml —— 进程级启动配置，不属于 .oryxos/ 初始化文件
+providers:
+  - name: deepseek
+    api_key: ${DEEPSEEK_API_KEY}
+  - name: minimax
+    api_key: ${MINIMAX_API_KEY}
 ```
 
 ```yaml
@@ -86,24 +85,52 @@ provider:
   temperature: 0.7
 ```
 
-两层各管一段：全局层只管"连接"（provider 存不存在、key 有没有），Profile 层管"调用参数"（用哪个 model、什么温度）。Profile 引用的 `provider.name` 如果在全局层找不到同名项，必须直接报错，不能悄悄用错或者留空跑过去。
+两层各管一段：全局层只管"启用与凭证"（provider 存不存在、key 有没有），Profile 层管"调用参数"（用哪个 model、什么温度）。明确命名的 Provider 所用 connector、协议适配和官方 API 地址由对应工厂封装，不要求用户提供 `base_url`，也不允许把 `minimax` 改指向任意 OpenAI 兼容服务。Profile 引用的 `provider.name` 如果在全局层找不到同名项，必须直接报错，不能悄悄用错或者留空跑过去。
 
 `${DEEPSEEK_API_KEY}` 表示运行时从环境变量取，代码和配置文件里都不会出现真实 key。
 
-**第二步：建映射表。** 启动时，按全局层的 `providers` 列表逐条调用 Eino-ext 的 connector 构造函数创建对应的 `model.ToolCallingChatModel`，把 name 和模型实例存进一个 `map[string]model.ToolCallingChatModel`。这就是前面说的坑一的解法——**显式建表，不靠类型扫描**。原则就一条：谁对谁必须写死、看得见。
+**第二步：注册工厂，再按 Profile 创建实例。** 工厂表按 `provider.name` 选择 DeepSeek 原生 connector 或 OpenAI connector；加载合法 Profile 时，把全局连接信息与 Profile 的 model/temperature 合并，创建独立模型实例并以 `Profile.name` 保存。这样厂商选择显式可见，同时相同厂商的多个 Profile 也不会共享配置。
 
 ```go
-// ProviderRegistry 显式维护 provider 名 → 模型实例的映射
+type ModelFactory func(context.Context, ProviderConfig) (model.ToolCallingChatModel, error)
+
 type ProviderRegistry struct {
-    models map[string]model.ToolCallingChatModel
+	factories map[string]ModelFactory               // key: provider.name
+	models    map[string]model.ToolCallingChatModel // key: profile.name
 }
 ```
+
+工厂注册示例：
+
+```go
+const miniMaxOpenAIBaseURL = "https://api.minimax.io/v1"
+
+// 工厂注册时，每个 name 对应一个构造函数。
+factories["deepseek"] = func(ctx context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
+	return deepseek.NewChatModel(ctx, &deepseek.ChatModelConfig{
+		APIKey:      cfg.APIKey,
+		Model:       cfg.Model,
+		Temperature: cfg.Temperature,
+	})
+}
+factories["minimax"] = func(ctx context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
+	temperature := cfg.Temperature
+	return openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		APIKey:      cfg.APIKey,
+		Model:       cfg.Model,
+		BaseURL:     miniMaxOpenAIBaseURL,
+		Temperature: &temperature,
+	})
+}
+```
+
+这里展示的是“厂商名选择构造函数”的结构：DeepSeek 使用原生 connector 自带的官方默认地址，因此不传 `BaseURL`；MiniMax 借用 OpenAI connector，所以由 `minimax` 工厂固定官方兼容地址。`ProviderConfig` 只合并 `Name/Model/APIKey/Temperature`，不含 `BaseURL`。字段已按锁定的稳定版 Eino-ext DeepSeek `v0.1.7` 和 OpenAI `v0.1.13` 本地源码核验；Eino core 锁定为 `v0.9.19`。
 
 **第三步：写 Chat 方法。** 这是整个 Provider 的核心，骨架长这样：
 
 ```go
 func (p *ProviderService) Chat(ctx context.Context, sessionID string, profile *Profile, messages []*schema.Message) (*schema.Message, error) {
-    cm, ok := p.registry.models[profile.Provider.Name]   // 按名字取模型
+    cm, ok := p.registry.models[profile.Name]            // 按 Profile 取隔离实例
     if !ok {
         return nil, fmt.Errorf("provider not found: %s", profile.Provider.Name)
     }
@@ -132,7 +159,7 @@ func (p *ProviderService) Chat(ctx context.Context, sessionID string, profile *P
 一行行看它在干嘛：
 
 - `Chat(ctx, sessionID, ...)`——多传一个 sessionID，是因为审计记录要落到 `llm_calls` 表，那张表按 session 关联，方法签名不带这个参数，审计那一步就没法写。
-- `p.registry.models[profile.Provider.Name]`——拿着 Profile 里写的 provider 名字，去表里取对应的模型。取不到就直接返回错误，别让它悄悄用了个错的。
+- `p.registry.models[profile.Name]`——按 Profile 唯一运行时标识取启动阶段创建好的独立模型实例。Provider 名只用于选工厂，不作为模型实例缓存键。
 - `cm.WithTools(toolInfos)`——把这次能用的工具翻译成 Eino 的 `[]*schema.ToolInfo` 格式（只生成 schema，也就是工具说明，不执行）。`WithTools` 返回一个新的不可变模型实例，不影响原始模型。
 - `modelWithTools.Generate(ctx, messages, ...)`——发起真正的调用。通过 `model.WithTemperature` 和 `model.WithModel` 传入调用参数。
 - `p.audit.Record(..., true, "", ...)`——调用**成功**，把用了哪个 provider、哪个 model、花了多少 token、耗时多久记一笔，`success` 记 `true`。
@@ -169,38 +196,38 @@ func (p *ProviderService) Chat(ctx context.Context, sessionID string, profile *P
 
 | 测试文件 | 覆盖的验收点 |
 |---|---|
-| `profile_loader_test.go` | 合法 YAML 全字段解析；引用不存在的 provider 报错清晰；坏文件不阻断其余加载；`${ENV}` 占位从环境变量解析 |
-| `provider_service_test.go` | 双 provider 按名路由不串台；未知名返回错误；成功/失败都落审计；自动执行关闭 |
+| `profile_loader_test.go` | 合法 YAML 全字段解析；引用不存在的 provider 报错清晰；坏文件不阻断其余加载；全局 Provider 凭证的 `${ENV}` 占位正确解析 |
+| `provider_service_test.go` | DeepSeek/MiniMax 工厂路由不串台；同一 Provider 的两个 Profile 实例隔离；未知名返回错误；成功/失败都落审计；自动执行关闭 |
 | `tool_schema_adapter_test.go` | `OryxTool` 的 schema 翻译成 Eino 格式后字段一一对齐；只翻译、产物里不含任何执行逻辑 |
 | `llm_call_repository_test.go` | 手工建表脚本建出的 `llm_calls` 能存能读，`success`/`error_message` 两列真实存在 |
 
 **最值钱的三个测试方法，写出来看。** 都在 `provider_service_test.go` 里，mock 两个 `model.ToolCallingChatModel` 就能测：
 
 ```go
-func Test按名路由_两个provider不串台(t *testing.T) {
+func TestRoutesDeepSeekAndMiniMaxByProviderName(t *testing.T) {
     deepseek := &mockChatModel{}
-    kimi := &mockChatModel{}
+    minimax := &mockChatModel{}
     service := NewProviderService(map[string]model.ToolCallingChatModel{
-        "deepseek": deepseek, "kimi": kimi,
+        "ops-agent": deepseek, "support-agent": minimax,
     }, adapter, audit)
 
-    service.Chat(context.Background(), "s-1", profileUsing("kimi"), prompt)
+    service.Chat(context.Background(), "s-1", profileNamed("support-agent", "minimax"), prompt)
 
-    if kimi.callCount != 1 {
-        t.Errorf("expected kimi to be called once, got %d", kimi.callCount)
+    if minimax.callCount != 1 {
+        t.Errorf("expected minimax to be called once, got %d", minimax.callCount)
     }
     if deepseek.callCount != 0 {
         t.Errorf("expected deepseek to never be called, got %d", deepseek.callCount)
     }
 }
 
-func Test调用失败_审计必须留下success为false的记录(t *testing.T) {
+func TestRecordsFailedLLMCallBeforeReturningError(t *testing.T) {
     chatModel := &mockChatModel{err: errors.New("connect timeout")}
     service := NewProviderService(map[string]model.ToolCallingChatModel{
-        "deepseek": chatModel,
+        "ops-agent": chatModel,
     }, adapter, audit)
 
-    _, err := service.Chat(context.Background(), "s-1", profileUsing("deepseek"), prompt)
+    _, err := service.Chat(context.Background(), "s-1", profileNamed("ops-agent", "deepseek"), prompt)
     if err == nil {
         t.Fatal("expected error, got nil")
     }
@@ -216,13 +243,13 @@ func Test调用失败_审计必须留下success为false的记录(t *testing.T) {
     }
 }
 
-func Test带工具schema调用_请求里关闭了自动执行(t *testing.T) {
+func TestBindsToolSchemasWithoutExecutingTools(t *testing.T) {
     chatModel := &mockChatModel{}
     service := NewProviderService(map[string]model.ToolCallingChatModel{
-        "deepseek": chatModel,
+        "ops-agent": chatModel,
     }, adapter, audit)
 
-    service.Chat(context.Background(), "s-1", profileUsing("deepseek"), promptWithTools(httpGetTool))
+    service.Chat(context.Background(), "s-1", profileNamed("ops-agent", "deepseek"), promptWithTools(httpGetTool))
 
     if len(chatModel.lastToolInfos) == 0 {
         t.Error("expected tool infos to be passed, got none")
@@ -232,15 +259,15 @@ func Test带工具schema调用_请求里关闭了自动执行(t *testing.T) {
 }
 ```
 
-第一个测的是坑一（显式映射），第三个测的是坑二（关自动执行）——**每个"想清楚"阶段点过名的坑，都应该有一个对应的回归测试**，这样坑就被永久钉死了，后来的人改不回去。第二个测的是最容易漏的失败审计路径：注意断言的不是"没返回错误"，而是"返回了错误**并且**审计先落了账"。
+第一个测的是坑一（DeepSeek/MiniMax 工厂映射）；同文件还必须增加“两个 Profile 都用 DeepSeek 但配置不串台”的实例隔离测试。第三个测的是坑二（关自动执行）——**每个"想清楚"阶段点过名的坑，都应该有一个对应的回归测试**。第二个测的是最容易漏的失败审计路径：断言“返回了错误**并且**审计先落了账”。
 
 **`llm_call_repository_test.go` 的一个讲究**：建表要走那份手工脚本（测试里执行 `schema.sql`），不要让 GORM `AutoMigrate` 自动建——不然测试绿了、生产上跑真脚本时列名对不上，白测。
 
-**集成冒烟 `provider_smoke_test.go`**：一个方法，读环境变量里的真 key、真调一次、断言拿到非空响应且 `llm_calls` 多了一条 `success=true`。跑法：
+**集成冒烟 `provider_smoke_test.go`**：分别覆盖 DeepSeek 原生 connector 和 MiniMax OpenAI 兼容 connector；读取环境变量里的真 key，调用一次并断言拿到非空响应且 `llm_calls` 多了一条 `success=true`。跑法：
 
 ```bash
 go test ./...                                     # 日常：只跑单测，全绿才算实现完成
-DEEPSEEK_API_KEY=xxx go test -tags=integration ./internal/provider/...  # 手动：冒烟验真连通
+DEEPSEEK_API_KEY=xxx MINIMAX_API_KEY=xxx go test -tags=integration ./internal/provider/...  # 手动：两条路径冒烟验真
 ```
 
 ---

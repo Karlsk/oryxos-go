@@ -1,17 +1,17 @@
 <!--
 Sync Impact Report
-- Version change: 1.0.0 -> 1.1.0
+- Version change: 2.0.0 -> 3.0.0
 - Modified principles:
-  - II. ReAct Control Remains in OryxOS: added prompt provenance and precedence
-  - VI. All Tools Use One Controlled Execution Path: defined retry limits and attempt logging
-  - VII. State and Call Records Exist from Day One: clarified logical call records and state safety
-  - VIII. Security and the Pure-Go Binary Are Non-Negotiable: added secret and network boundaries
+  - III. Eino Core Is the Runtime Boundary: made vendor endpoint configuration a Provider-factory responsibility
+  - IV. Providers Are Explicitly Mapped and Profile-Isolated: removed user-configurable Provider endpoints from the process declaration contract
+  - VIII. Security and the Pure-Go Binary Are Non-Negotiable: narrowed Provider startup input to name and environment-backed API key
 - Modified sections:
-  - Runtime Workspace and Configuration: added non-destructive init and immutable snapshots
-  - Delivery Gates: added performance verification and clean-Linux smoke testing
+  - Runtime Workspace and Configuration: made explicit Provider endpoints factory-owned and non-overridable
 - Added sections: none
 - Removed sections: none
-- Follow-up TODOs: none
+- Follow-up TODOs:
+  - Existing default Profile templates must remove legacy api_key/base_url during lesson 16 implementation
+  - Process-level Provider decoding must reject legacy or unknown base_url fields
 -->
 
 # OryxOS Constitution
@@ -57,7 +57,11 @@ Handlers, Scheduler, Runtime, and Tool packages MUST NOT retain, inspect, or con
 Eino-ext concrete types.
 
 DeepSeek MUST use the Eino-ext DeepSeek connector. MiniMax MUST use the Eino-ext OpenAI
-connector with an explicit MiniMax-compatible base URL. Core HTTP APIs MUST remain
+connector with a factory-owned MiniMax-compatible base URL. Explicit Provider factories
+MUST encapsulate connector selection, protocol adaptation, and endpoint policy; a native
+connector's official default endpoint SHOULD be used without redundant configuration,
+while compatibility adapters MUST set the vendor endpoint internally. Users MUST NOT
+configure or override those endpoints. Core HTTP APIs MUST remain
 synchronous JSON; connector streaming support MUST NOT be presented as core SSE support.
 This boundary isolates vendor and connector churn from the runtime.
 
@@ -65,8 +69,11 @@ This boundary isolates vendor and connector churn from the runtime.
 
 Provider factories MUST be registered explicitly by `provider.name`. Constructed
 `ToolCallingChatModel` instances MUST be stored by `Profile.name`, not only by provider
-name. Two Profiles using the same vendor MUST be able to use different models, API keys,
-base URLs, and temperatures without sharing mutable configuration.
+name. Process-level startup configuration MUST declare each available provider's API key
+and MUST NOT expose a Provider endpoint. A Profile MUST select only provider name, model,
+and temperature. The two layers MUST be merged before constructing an instance for each valid Profile. Two
+Profiles using the same vendor MUST be able to use different models and temperatures
+without sharing mutable instances or Tool bindings.
 
 The core release MUST support exactly DeepSeek and MiniMax. Provider fallback, hedge
 racing, circuit breaking, and adaptive routing MUST remain extension-stage work. Explicit
@@ -84,8 +91,9 @@ A runnable business Agent MUST be defined as Profile plus Skill:
 
 `.oryxos/agents/` and singular `AGENT.md` MUST NOT be created. Profile configuration
 MUST NOT be derived from Markdown frontmatter. Skill, Bootstrap, and Memory are prompt
-context and MUST NOT be registered as Tools. One configuration source prevents divergent
-runtime identities and duplicated lifecycle mechanisms.
+context and MUST NOT be registered as Tools. Profile MUST remain the sole per-Agent runtime
+selection source; process-level Provider declarations MUST contain connection information
+only and MUST NOT duplicate Agent model, Tool, Skill, Channel, or schedule choices.
 
 ### VI. All Tools Use One Controlled Execution Path
 
@@ -109,8 +117,9 @@ in structured logs. Side-effecting calls such as `write_file`, `shell`, `http_po
 Session history MUST be persisted in SQLite. Every model call attempt MUST write
 `llm_calls`. Every logical Tool call MUST write exactly one `tool_invocations` record for
 its final outcome, including unsuccessful outcomes. Retry attempts MUST NOT introduce
-additional core tables or columns. Failure details MUST also appear in structured logs with
-request, session, profile, and channel correlation fields.
+additional core tables or columns. Each LLM record MUST include a success flag and nullable,
+redacted error message so unsuccessful calls remain queryable. Failure details MUST also
+appear in structured logs with request, session, profile, and channel correlation fields.
 
 Long-term Memory MUST use only `.oryxos/memory/MEMORY.md` in the core stage.
 `save_memory` MUST append to it, `recall_memory` MUST use keyword matching, and prompt
@@ -129,10 +138,10 @@ complete audit and governance capabilities reserved for later phases.
 
 ### VIII. Security and the Pure-Go Binary Are Non-Negotiable
 
-Real credentials MUST NOT be committed to version control. Generated configuration
-templates MUST use placeholders. Runtime secrets MUST be supplied through environment
-expansion or separate uncommitted local configuration and MUST remain redacted from logs
-and errors.
+Real credentials MUST NOT be committed to version control. Process-level Provider
+configuration and other generated secret-bearing templates MUST use environment
+placeholders. Profile YAML MUST NOT contain Provider credentials. Runtime secrets MUST
+remain redacted from logs, stored error messages, and returned errors.
 
 Because the core HTTP API has no authentication, it MUST only be deployed inside a trusted
 network and MUST NOT be exposed directly to the public Internet. HTTPS termination MUST be
@@ -222,20 +231,27 @@ reside at `.oryxos/sessions/oryxos.db`.
 `oryxos init` MUST be idempotent and non-destructive. It MUST create missing artifacts,
 MUST NOT overwrite existing targets, and MUST report each target as created or skipped.
 
-Profile MUST remain the only runtime configuration source. Its top-level fields are
+Profile MUST remain the only per-Agent runtime selection source. Its top-level fields are
 `name`, `description`, `identity`, `provider`, `tools`, `skills`,
 `mcp_servers`, `notify_channels`, `schedules`, `channels`, `bootstrap`,
-and `settings`. Provider fields are `name`, `model`, `api_key`, optional
-`base_url`, and optional `temperature`.
+and `settings`. Profile Provider fields are `name`, `model`, and optional `temperature`.
+Process-level startup configuration MUST separately declare available Providers with
+`name` and environment-backed `api_key`. Explicit Provider endpoints MUST be owned by their
+factories and MUST NOT be accepted as startup configuration. It is not a workspace
+initialization artifact, so the five-directory and six-file contract remains unchanged.
 
 `ProfileRuntime` MUST be constructed as an immutable startup snapshot. Core-stage
 configuration changes MUST take effect after restart; file watching and hot reload MUST
 remain outside the core stage.
 
-Users MUST configure the initial API key and model by editing
-`.oryxos/profiles/default.yaml`. `ConfigLoader` MUST expand `${ENV_VAR}`,
-strictly reject invalid or unknown critical fields, fail fast on missing references, and
-redact API keys, webhook URLs, and MCP credentials.
+Administrators MUST configure Provider credentials through process-level startup
+configuration, while users select the initial Provider, model, and temperature in
+`.oryxos/profiles/default.yaml`. `ConfigLoader` MUST expand `${ENV_VAR}` and strictly
+validate the process-level declaration. A malformed process-level declaration MUST fail
+startup. `ProfileLoader` MUST strictly validate Profiles independently: a bad Profile or
+missing Provider reference MUST be reported and skipped without preventing other valid
+Profiles from loading. API keys, webhook URLs, MCP credentials, and stored error messages
+MUST be redacted.
 
 Stateful Session lookup MUST use `channel + user_id + profile.name`. Stateless invoke MUST
 use `channel=http_invoke` with a unique `request_id` as `user_id`. Scheduler MUST use
@@ -278,6 +294,9 @@ check:
 - Tool retry idempotency rules and notify channel selection;
 - Session identity, archive behavior, scheduler isolation, and overlap skipping;
 - exact API, CLI, Tool, table, Demo, and workspace counts.
+
+Core SQLite tables MUST be created and evolved by repository-maintained SQL migrations;
+GORM `AutoMigrate` MUST NOT define the production schema.
 
 ### Delivery Gates
 
@@ -339,4 +358,4 @@ check. Deviations MUST be documented and explicitly approved; silent exceptions 
 prohibited. `AGENTS.md` provides operational implementation guidance, while
 `docs/TechnicalSolution.md` provides architecture details.
 
-**Version**: 1.1.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-08-15
+**Version**: 3.0.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-09-15

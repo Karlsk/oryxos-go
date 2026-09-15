@@ -234,7 +234,7 @@ oryxos init   # 在当前目录下创建 .oryxos/ 工作区
 
 ### 5.2 Profile 配置
 
-Profile 是 Agent 的运行时宿主配置，用 YAML 文件描述——决定一个 Agent 绑定哪个 Skill、用哪个 Provider/模型、能用哪些 Tool、绑定哪个 Channel、要不要定时。Profile 本身是 Agent OS 内核层的能力（底座），"这个 Agent 具体做什么"由它引用的 Skill 定义，两者绑定在一起才构成一个完整的业务 Agent。
+Profile 是 Agent 的运行时宿主配置，用 YAML 文件描述——决定一个 Agent 绑定哪个 Skill、选择哪个 Provider/模型、能用哪些 Tool、绑定哪个 Channel、要不要定时。Profile 本身是 Agent OS 内核层的能力（底座），"这个 Agent 具体做什么"由它引用的 Skill 定义，两者绑定在一起才构成一个完整的业务 Agent。Provider 的连接凭证属于实例级启动配置，不在各 Profile 中重复保存；明确命名的 Provider 所需 connector、协议适配和端点策略由对应工厂封装，不暴露为用户配置。原生 connector 已提供官方默认地址时应直接沿用。
 
 **Profile YAML 结构：**
 
@@ -247,10 +247,8 @@ identity:
   prompt: string                # 人格/系统提示词（或引用 SOUL.md）
 
 provider:
-  name: string                  # Provider 名称（deepseek/minimax/qwen 等）
+  name: string                  # Provider 名称（核心阶段为 deepseek/minimax）
   model: string                 # 模型名
-  api_key: ${LLM_API_KEY}       # API key，通过环境变量注入
-  base_url: string              # 自定义 API 地址（可选）
   temperature: float            # 温度参数（可选）
 
 tools:
@@ -286,6 +284,20 @@ settings:
   max_history_turns: 20         # 组装上下文时最多保留的近期对话轮数
 ```
 
+实例级启动配置另行声明可用 Provider 及其凭证，凭证值使用环境变量占位；该配置不属于运行时工作区，也不增加 `oryxos init` 的初始化文件数量：
+
+```yaml
+providers:
+  - name: deepseek
+    api_key: ${DEEPSEEK_API_KEY}
+  - name: minimax
+    api_key: ${MINIMAX_API_KEY}
+```
+
+核心阶段实例级 Provider 声明的字段固定为 `name/api_key`。DeepSeek 工厂使用原生 connector 的官方默认地址；MiniMax 工厂使用 OpenAI connector 并固定官方兼容地址。用户不能通过 `minimax` 配置把请求改指向任意 OpenAI 兼容端点。未来若支持自定义 OpenAI 兼容服务，应作为新的显式 Provider 类型设计，不复用或扩展核心 `minimax` 的配置含义。
+
+启动时先加载实例级 Provider 声明，再逐个加载 Profile。合法 Profile 独立注册；单个坏 Profile 记录脱敏错误并跳过，不阻断其他合法 Profile。Profile 引用未声明的 Provider 时，该 Profile 必须显式报错，不能静默选择其他模型。若实例级 Provider 声明本身非法，则启动失败。
+
 Profile 的 `name` 是核心阶段唯一的运行时标识，必须在工作区内唯一；`identity.agent_name` 只用于界面和回复中的展示，可以重复。CLI 的 `--profile <name>`、Session 的 `profile_name`、定时任务归属以及 `POST /api/v1/agents/{name}/invoke` 中的 `{name}` 都使用 Profile `name`。
 
 **Profile 管理命令：**
@@ -309,11 +321,12 @@ Provider 是 LLM 调用的统一抽象。所有 LLM 调用通过 Provider 接口
 
 首批跑通 DeepSeek 和 MiniMax。MiniMax 无 Eino-ext 原生 connector，使用官方 OpenAI 兼容 API 接入——选它而非有原生 connector 的模型是刻意安排，专门用来验证 OpenAI 兼容这条适配路径：Function Calling、流式响应，以及多轮工具调用时 assistant 完整响应和 Tool 消息的正确累积，都要在这条路径上跑通。
 
-每个 Provider 实例配置：
-- `provider 名`（deepseek、minimax、qwen 等）
-- `模型名`
-- `API key`
-- `可选的 base URL`
+配置分成两层：
+
+- 实例级 Provider 声明：`provider 名`、环境变量注入的 `API key`，回答“这个 OryxOS 实例启用哪些明确 Provider”。connector、协议适配和端点策略由对应工厂封装；原生 connector 的官方默认地址不重复配置。
+- Profile Provider 段：`provider 名`、`模型名`、`temperature`，回答“这个 Agent 如何使用已声明的 Provider”。
+
+启动时按 Provider 名找到构造函数，把两层配置合并后为每个合法 Profile 创建独立的 `ToolCallingChatModel` 实例，并以 `Profile.name` 保存。两个 Profile 即使选择同一 Provider，也不得共享可能携带不同模型参数的实例。
 
 **核心阶段不做**：fallback 和 hedge racing。Provider 故障时直接报错给 Agent；成本透明只做基础版（每次 LLM 调用记录 token 使用量、Provider、模型落到日志）。
 
@@ -507,7 +520,7 @@ Session 是用户和 Agent 一次对话的上下文容器，包含起止时间�
 | HTTP API | `oryxos serve` | 启动后在指定端口（默认 8080）开放 RESTful 接口，业务系统通过 HTTP 调用；同时启动定时任务调度 |
 | 守护进程 | `oryxos gateway` | 核心阶段作为常驻 Agent Runtime 和定时任务宿主；扩展阶段再同时承载多个 Channel |
 
-三种模式共享同一份 Profile 配置和 Session 存储。
+三种模式共享同一份实例级 Provider 声明、Profile 配置和 Session 存储。
 
 ---
 
@@ -536,9 +549,9 @@ Session 是用户和 Agent 一次对话的上下文容器，包含起止时间�
 
 核心阶段做基础版：
 
-- 敏感配置通过**环境变量**注入或独立的本地配置文件加载，不明文写死在 Profile YAML 里
-- Profile 里用 `${ENV_VAR}` 占位，加载时从环境变量解析
-- 配置加载时做基础校验（必填项、格式），缺失或非法时给出清晰报错
+- 实例级启动配置声明可用 Provider，API key 使用 `${ENV_VAR}` 占位并在加载时从环境变量解析
+- Profile 只保存 Provider 名、模型和 temperature，不保存 API key
+- 配置加载时做基础校验（必填项、格式和引用）；坏 Profile 记录脱敏错误并跳过，实例级 Provider 声明非法时启动失败
 
 完整的加密存储、密钥轮转、对接企业密钥管理系统（KMS、Vault）放在扩展阶段。
 
@@ -633,7 +646,7 @@ OryxOS 作为开源项目，需要一个独立的主页作为对外门面，讲�
 
 ### 8.3 可运维性
 
-- 配置变更通过 Profile YAML 文件修改，核心阶段重启服务生效
+- Agent 运行选择通过 Profile YAML 修改，Provider 连接信息通过实例级启动配置修改；核心阶段均需重启服务生效
 - 支持物理机、虚拟机、Docker、Kubernetes 部署，单二进制无外部运行时依赖
 
 ### 8.4 兼容性
@@ -646,7 +659,7 @@ OryxOS 作为开源项目，需要一个独立的主页作为对外门面，讲�
 ### 8.5 安全
 
 - API 调用支持 HTTPS
-- 核心阶段敏感配置通过环境变量注入或独立本地配置加载，不在 Profile YAML 中写入明文；加密存储、密钥轮转及 KMS/Vault 集成放在扩展阶段
+- 核心阶段敏感配置通过实例级启动配置中的环境变量占位注入，不进入 Profile YAML；加密存储、密钥轮转及 KMS/Vault 集成放在扩展阶段
 - Tool 调用通过应用层白名单校验做基础隔离
 - 完整的鉴权机制、Docker Sandbox 隔离、SSO 集成放在扩展阶段
 
@@ -669,7 +682,8 @@ OryxOS 作为开源项目，需要一个独立的主页作为对外门面，讲�
   → 生成 MCP Server 配置文件（mcp_servers.yaml）
   → 生成默认 Profile（profiles/default.yaml）
 用户编辑 Bootstrap 文件填入项目背景、Agent 人格、用户偏好
-用户编辑 default.yaml 配置 LLM Provider 的 API key 和模型
+用户在实例级启动配置中声明 Provider 和 API key 环境变量
+用户编辑 default.yaml 选择 Provider、模型和 temperature
 ```
 
 ### 流程二：Profile 创建和 Agent 启动
@@ -794,6 +808,8 @@ cron 到点
 | `prompt_tokens` | INT | 输入 token 数 |
 | `completion_tokens` | INT | 输出 token 数 |
 | `total_tokens` | INT | 总 token 数 |
+| `success` | BOOLEAN | 是否成功 |
+| `error_message` | TEXT | 失败原因（可空） |
 | `duration_ms` | BIGINT | 调用耗时（毫秒） |
 | `created_at` | TIMESTAMP | 调用时间 |
 
