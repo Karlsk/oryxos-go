@@ -132,12 +132,12 @@ description: "Implementation tasks for lesson 16 LLM Provider integration"
 
 **Purpose**: Supersede the original Eino-core runtime boundary after the approved architecture decision. Eino remains the Provider implementation, while Runtime and Tool consume OryxOS-owned types.
 
-- [ ] T031 Add failing contract tests for OryxOS `ChatModel`, message roles, Tool-call/result correlation, Tool definitions, usage, and finish reason in `internal/llm` and `internal/provider/eino_adapter_test.go`
-- [ ] T032 Add Eino-import architecture checks proving that production Eino imports exist only under `internal/provider`
-- [ ] T033 Implement `internal/llm` domain types and `ChatModel`; implement the bidirectional Eino adapter in `internal/provider/eino_adapter.go`
-- [ ] T034 Change Provider factories and registry storage from Eino `model.ToolCallingChatModel` to OryxOS `llm.ChatModel`, wrapping both DeepSeek and MiniMax connectors
-- [ ] T035 Change `ProviderService.Chat`, Tool metadata resolution, tests, and integration smoke tests to use OryxOS messages, responses, and Tool definitions without changing audit behavior
-- [ ] T036 Run formatting, package tests, `go test ./...`, `go vet ./...`, and `CGO_ENABLED=0 go build ./cmd/oryxos`; confirm no Eino imports outside `internal/provider`
+- [x] T031 Add failing contract tests for OryxOS `ChatModel`, message roles, Tool-call/result correlation, Tool definitions, usage, and finish reason in `internal/llm` and `internal/provider/eino_adapter_test.go`
+- [x] T032 Add Eino-import architecture checks proving that production Eino imports exist only under `internal/provider`
+- [x] T033 Implement `internal/llm` domain types and `ChatModel`; implement the bidirectional Eino adapter in `internal/provider/eino_adapter.go`
+- [x] T034 Change Provider factories and registry storage from Eino `model.ToolCallingChatModel` to OryxOS `llm.ChatModel`, wrapping both DeepSeek and MiniMax connectors
+- [x] T035 Change `ProviderService.Chat`, Tool metadata resolution, tests, and integration smoke tests to use OryxOS messages, responses, and Tool definitions without changing audit behavior
+- [x] T036 Run formatting, package tests, `go test ./...`, `go vet ./...`, and `CGO_ENABLED=0 go build ./cmd/oryxos`; confirm no Eino imports outside `internal/provider`
 
 ---
 

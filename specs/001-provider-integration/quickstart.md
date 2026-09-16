@@ -51,7 +51,8 @@ The default test run must cover:
 - strict process Provider parsing and secret expansion/redaction;
 - full Profile structure parsing, undeclared Provider rejection, bad-file isolation, and duplicate-name handling;
 - DeepSeek/MiniMax factory routing and two same-vendor Profiles with isolated settings;
-- Tool schema conversion and `WithTools` binding without Tool execution;
+- OryxOS Tool-definition conversion to Eino `WithTools` binding without Tool execution;
+- OryxOS/Eino conversion of all text message roles, Tool-call/result IDs, JSON Schema, usage, and finish reason;
 - successful and failed model calls, zero-value unavailable usage, and audit-before-return behavior;
 - execution of the hand-maintained SQL contract against temporary pure-Go SQLite;
 - the credential-free `profiles/default.yaml` template.
@@ -119,3 +120,15 @@ go vet ./...                          PASS
 CGO_ENABLED=0 go test ./internal/store ./internal/provider  PASS
 CGO_ENABLED=0 go build ./cmd/oryxos  PASS
 ```
+
+Run on 2026-09-17 after introducing the OryxOS-owned LLM boundary:
+
+```text
+go test ./...                         PASS
+go vet ./...                          PASS
+CGO_ENABLED=0 go build ./cmd/oryxos  PASS
+go test -tags=integration ./internal/provider -run TestProviderSmoke  PASS (both credentials deliberately unset; subtests skipped)
+```
+
+The architecture harness also confirms that production imports of Eino core
+and Eino-ext are confined to `internal/provider`.
