@@ -128,6 +128,19 @@ description: "Implementation tasks for lesson 16 LLM Provider integration"
 
 ---
 
+## Phase 7: OryxOS-Owned LLM Boundary Amendment
+
+**Purpose**: Supersede the original Eino-core runtime boundary after the approved architecture decision. Eino remains the Provider implementation, while Runtime and Tool consume OryxOS-owned types.
+
+- [ ] T031 Add failing contract tests for OryxOS `ChatModel`, message roles, Tool-call/result correlation, Tool definitions, usage, and finish reason in `internal/llm` and `internal/provider/eino_adapter_test.go`
+- [ ] T032 Add Eino-import architecture checks proving that production Eino imports exist only under `internal/provider`
+- [ ] T033 Implement `internal/llm` domain types and `ChatModel`; implement the bidirectional Eino adapter in `internal/provider/eino_adapter.go`
+- [ ] T034 Change Provider factories and registry storage from Eino `model.ToolCallingChatModel` to OryxOS `llm.ChatModel`, wrapping both DeepSeek and MiniMax connectors
+- [ ] T035 Change `ProviderService.Chat`, Tool metadata resolution, tests, and integration smoke tests to use OryxOS messages, responses, and Tool definitions without changing audit behavior
+- [ ] T036 Run formatting, package tests, `go test ./...`, `go vet ./...`, and `CGO_ENABLED=0 go build ./cmd/oryxos`; confirm no Eino imports outside `internal/provider`
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase dependencies
@@ -212,7 +225,7 @@ Task T022: Define audit-ordering failures in internal/provider/provider_service_
 
 - Do not implement ReAct iteration, Tool execution, Stream/SSE, fallback, retry, circuit breakers, or cost dashboards.
 - Do not add a config file to `.oryxos init`, a CLI leaf command, REST endpoint, or database table.
-- Do not expose Eino-ext connector types outside `internal/provider`.
+- Do not expose any Eino core or Eino-ext type outside `internal/provider`.
 - Do not run live Provider tests in default CI or persist real credentials.
 
 ## Notes

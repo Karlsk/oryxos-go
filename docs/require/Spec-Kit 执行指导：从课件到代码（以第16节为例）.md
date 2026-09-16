@@ -88,8 +88,8 @@ implement 的完成标准是 harness 与仓库门禁全绿：`go test ./...`、`
 
 - FR1：每个 Agent 的模型选择由 Profile（YAML）声明——用哪个 provider、哪个 model、什么温度；系统启动时从 `.oryxos/profiles/` 加载全部 Profile，坏文件记错误但不阻断启动。
 - FR2：实例级声明 DeepSeek/MiniMax 清单及凭证来源（环境变量占位）；工厂按 provider 名注册，合并两层配置后为每个 Profile 创建并按 `Profile.name` 保存模型实例。Profile 引用了清单里不存在的 provider 名，必须显式报错，不允许静默跑过。
-- FR3：上层传入 sessionID、Profile、messages（`[]*schema.Message`），系统按 Profile 选中对应模型、发起一次调用、把结果原样返回（`*schema.Message`）。
-- FR4：请求可携带工具的 schema 说明（`[]*schema.ToolInfo`，告诉模型有哪些工具可用）；模型返回"想调某工具"时（`resp.ToolCalls`），该请求原样交回上层——本模块只做翻译，绝不执行工具，必须关掉 Eino ADK 的自动工具执行。
+- FR3：上层传入 sessionID、Profile、OryxOS `[]llm.Message`，系统按 Profile 选中对应模型、发起一次调用、返回 OryxOS `llm.Response`。
+- FR4：请求可携带 OryxOS `[]llm.ToolDefinition`；Provider 适配层负责与 Eino schema 双向转换并保留 Tool Call ID/arguments，绝不执行工具，必须关掉 Eino ADK 的自动工具执行。
 - FR5：每次调用不论成败都落审计（`llm_calls` 表）：provider、model、token 用量、耗时、success 标识、失败原因，按 session 关联。
 - FR6：凭证只从环境变量读取，代码、配置文件、日志里都不出现明文。
 

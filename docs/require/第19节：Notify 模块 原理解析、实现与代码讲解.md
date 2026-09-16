@@ -18,7 +18,7 @@ CLI 和 Web Service 都是“人推”：有人发起一次调用，Agent 处理
 
 ## 二、动手前先想清楚几件事
 
-**第一，先定意图边界，别先绑定某家渠道。** Tool 表达的是“把一条内容送到某个通知目标”，元数据和执行入口遵守 Eino `tool.InvokableTool`；真正发送的组件只接收中立的 `NotifyTarget`，不在接口里出现“企业微信”“飞书”这类某一档实现特有的词。核心阶段只挂通用 Webhook，以后加专用渠道时替换发送实现，不改 `notify(content, channel?)` 的 Tool 契约。
+**第一，先定意图边界，别先绑定某家渠道。** Tool 表达的是“把一条内容送到某个通知目标”，元数据和执行入口遵守 OryxOS `InvokableTool`；真正发送的组件只接收中立的 `NotifyTarget`，不在接口里出现“企业微信”“飞书”这类某一档实现特有的词。核心阶段只挂通用 Webhook，以后加专用渠道时替换发送实现，不改 `notify(content, channel?)` 的 Tool 契约。
 
 **第二，核心阶段只做通用 Webhook，不逐家接专用 API。** 企业微信、飞书、钉钉的群机器人都提供 Webhook 地址，核心阶段用一个通用的 Webhook sender 覆盖最短链路，不接每家的签名算法、AccessToken 刷新或专用 SDK——那些留给扩展阶段按需要再加。
 
@@ -35,7 +35,7 @@ CLI 和 Web Service 都是“人推”：有人发起一次调用，Agent 处理
 
 想清楚就这几句：Tool 契约表达意图，不表达厂商实现；核心阶段只填通用 Webhook 这一档；安全校验和审计走统一机制；具体推到哪是 Profile 配置，不是对话内容。
 
-> **实现顺序说明（授课顺序 ≠ 构建顺序）**：本节的目标选择与 Webhook 发送逻辑可以立即实现、独立单测；但 `notify` 作为 Eino `tool.InvokableTool` 注册到 `ToolRegistry` 依赖第 20 节，完整 Sandbox 接线依赖第 24 节。因此本节先把边界和行为钉死，第 20 节完成 Tool 注册，第 24 节完成真实安全校验，27/28 节串联时做全量验证。Go 版本不使用 Java `ThreadLocal ProfileContext`；ProfileRuntime 组装时把当前 Profile 的不可变通知配置绑定到该 Profile 专属的 `NotifyTool` 实例中。
+> **实现顺序说明（授课顺序 ≠ 构建顺序）**：本节的目标选择与 Webhook 发送逻辑可以立即实现、独立单测；但 `notify` 作为 OryxOS `InvokableTool` 注册到 `ToolRegistry` 依赖第 20 节，完整 Sandbox 接线依赖第 24 节。因此本节先把边界和行为钉死，第 20 节完成 Tool 注册，第 24 节完成真实安全校验，27/28 节串联时做全量验证。Go 版本不使用 Java `ThreadLocal ProfileContext`；ProfileRuntime 组装时把当前 Profile 的不可变通知配置绑定到该 Profile 专属的 `NotifyTool` 实例中。
 
 ---
 
@@ -98,7 +98,7 @@ func (s *WebhookSender) Send(ctx context.Context, target NotifyTarget, content s
 
 这段代码只展示核心顺序。正式实现还必须给 `http.Client` 设置超时、请求体与响应体大小限制，并通过 `CheckRedirect` 对每次重定向目标重新执行 `ValidateURL`；不能用默认 Client 绕过重定向检查。
 
-**NotifyTool（九个内置 Tool 之一）。** 它实现 Eino `tool.InvokableTool`：`Info(ctx)` 提供名为 `notify` 的 schema，`InvokableRun` 接收 JSON 参数并返回给模型看的字符串结果。下面省略 `Info` 的 schema 构造，只展开最关键的选择与调用逻辑：
+**NotifyTool（九个内置 Tool 之一）。** 它实现 OryxOS `InvokableTool`：`Info(ctx)` 提供名为 `notify` 的 `llm.ToolDefinition`，`Invoke` 接收 JSON 参数并返回给模型看的字符串结果。下面省略 `Info` 的 schema 构造，只展开最关键的选择与调用逻辑：
 
 ```go
 type notifyInput struct {
@@ -111,10 +111,9 @@ type NotifyTool struct {
 	sender   NotifySender
 }
 
-func (t *NotifyTool) InvokableRun(
+func (t *NotifyTool) Invoke(
 	ctx context.Context,
 	argumentsInJSON string,
-	_ ...tool.Option,
 ) (string, error) {
 	var input notifyInput
 	if err := json.Unmarshal([]byte(argumentsInJSON), &input); err != nil {

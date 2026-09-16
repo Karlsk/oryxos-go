@@ -13,7 +13,7 @@
 1. `oryxos init` 初始化工作区；管理员在实例级启动配置中声明 Provider 与凭证，用户编辑 `profiles/default.yaml` 选择 Provider 和模型。
 2. Profile 绑定 Provider、Skill、Tool、Bootstrap、Channel 和定时规则，形成可运行 Agent。
 3. CLI、HTTP API、AgentScheduler 统一进入 `AgentService`。
-4. `AgentService` 驱动自研 ReAct 循环，通过 Eino 调用 DeepSeek 或 MiniMax，并执行内置/MCP Tool。
+4. `AgentService` 驱动自研 ReAct 循环，通过 OryxOS `ChatModel` 端口调用 DeepSeek 或 MiniMax，并执行内置/MCP Tool。
 5. Session 和调用记录存入 SQLite，长期记忆存入 `memory/MEMORY.md`。
 6. 交付每日天气、每日科技日报两个定时推送 Demo。
 
@@ -24,8 +24,8 @@
 | 决策项 | 核心阶段选择 | 理由 |
 |---|---|---|
 | Agent 执行 | 自研轻量 ReAct 循环 | 保持循环、持久化、Tool 审计和错误处理可控 |
-| 模型抽象 | Eino core `model.ToolCallingChatModel` | 运行时只依赖稳定的统一接口 |
-| Provider 实现 | Eino-ext connector | 不重复实现厂商协议；connector 细节隔离在工厂内 |
+| 模型抽象 | OryxOS `llm.ChatModel` | Runtime 只依赖自有窄端口和领域类型，不泄漏 Eino |
+| Provider 实现 | Eino core + Eino-ext connector | 不重复实现厂商协议；Eino 细节隔离在 Provider 适配层 |
 | 首批模型 | DeepSeek + MiniMax | 同时验证原生 connector 与 OpenAI 兼容 connector |
 | Web | Gin | 轻量、成熟，满足 10 个核心 REST 端点 |
 | CLI | Cobra | 支持 12 个命令及分组子命令 |
@@ -40,7 +40,7 @@
 - 不使用 `.oryxos/agents/<name>/AGENT.md`；Profile YAML 是每个 Agent 运行选择的唯一来源，实例级 Provider 连接声明属于进程启动配置，Skill 位于 `.oryxos/skills/`。
 - 不在核心阶段引入 `SqliteMemoryStore`、Mem0、向量库或 Memory 分区。
 - 不在核心阶段创建 `scheduled_tasks`、`task_executions` 表或任务管理 API。
-- 不把 Eino-ext 暴露为业务层接口，也不直接依赖 Eino ADK Agent 封装。
+- 不把 Eino core/Eino-ext 类型暴露给 Runtime、Tool、Handler 或 Scheduler，也不依赖 Eino ADK Agent 封装。
 - 不使用依赖 CGO 的 `mattn/go-sqlite3`，保证单二进制和交叉编译承诺。
 
 ---
@@ -145,11 +145,13 @@ Agent = Profile（怎么运行） + Skill（做什么）
 
 ### 3.1 最终调用关系
 
-Provider 最终调用的是 Eino core 的 `model.ToolCallingChatModel`；Eino-ext 负责创建这个接口的具体实现，不是上层业务代码直接调用的统一接口。
+Runtime 只调用 OryxOS 自有的 `llm.ChatModel`。Provider 层用 Eino core `model.ToolCallingChatModel` 和 Eino-ext connector 实现该端口，并在适配器内完成 Message、Tool Definition、Tool Call、Usage 的双向转换。Eino 不是上层业务代码的公共边界。
 
 ```mermaid
 flowchart LR
-    R["ReActLoop"] --> M["model.ToolCallingChatModel"]
+    R["ReActLoop"] --> P["OryxOS llm.ChatModel"]
+    P --> A["EinoChatModelAdapter"]
+    A --> M["Eino ToolCallingChatModel"]
     F["ProviderFactory"] --> D["eino-ext DeepSeek connector"]
     F --> O["eino-ext OpenAI connector"]
     D --> M
@@ -161,11 +163,33 @@ flowchart LR
 依赖方向必须保持为：
 
 ```text
-runtime -> Eino core interface
+runtime/tool -> OryxOS llm types and interfaces
+provider adapter -> Eino core interface
 provider factory -> Eino-ext concrete connector -> vendor API
 ```
 
-上层不得保存 Eino-ext 具体类型，也不得让 Handler、Scheduler 或 Tool 直接构造模型 connector。
+只有 `internal/provider` 可以导入 Eino core 和 Eino-ext。Runtime、Tool、Handler 和 Scheduler 不得保存 Eino 类型，也不得直接构造模型 connector。
+
+OryxOS 窄端口覆盖核心阶段必需语义：
+
+```go
+type ChatModel interface {
+	Generate(ctx context.Context, request Request) (Response, error)
+}
+
+type Request struct {
+	Messages []Message
+	Tools    []ToolDefinition
+}
+
+type Response struct {
+	Message      Message
+	Usage        Usage
+	FinishReason string
+}
+```
+
+`Message` 必须保留 role、content、name、reasoning content、assistant tool calls 以及 Tool message 的 `tool_call_id/tool_name`；`ToolCall` 必须保留 ID、type、function name 和原始 JSON arguments；`ToolDefinition` 用标准 JSON Schema 表达参数。这些类型不包含 Eino 导入。
 
 ### 3.2 两层配置模型
 
@@ -207,11 +231,11 @@ Provider 工厂按 `provider.name` 注册，但模型实例按 `Profile.name` �
 type ModelFactory func(
 	ctx context.Context,
 	cfg ProviderConfig,
-) (model.ToolCallingChatModel, error)
+) (llm.ChatModel, error)
 
 type ProviderRegistry struct {
-	factories map[string]ModelFactory               // key: provider.name
-	models    map[string]model.ToolCallingChatModel // key: profile.name
+	factories map[string]ModelFactory  // key: provider.name
+	models    map[string]llm.ChatModel // key: profile.name
 }
 ```
 
@@ -221,21 +245,23 @@ type ProviderRegistry struct {
 const miniMaxOpenAIBaseURL = "https://api.minimax.cn/v1"
 
 // 工厂注册时，每个 name 对应一个构造函数。
-factories["deepseek"] = func(ctx context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
-	return deepseekmodel.NewChatModel(ctx, &deepseekmodel.ChatModelConfig{
+factories["deepseek"] = func(ctx context.Context, cfg ProviderConfig) (llm.ChatModel, error) {
+	connector, err := deepseekmodel.NewChatModel(ctx, &deepseekmodel.ChatModelConfig{
 		APIKey:      cfg.APIKey,
 		Model:       cfg.Model,
 		Temperature: cfg.Temperature,
 	})
+	return newEinoChatModelAdapter(connector, err)
 }
-factories["minimax"] = func(ctx context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
+factories["minimax"] = func(ctx context.Context, cfg ProviderConfig) (llm.ChatModel, error) {
 	temperature := cfg.Temperature
-	return openaimodel.NewChatModel(ctx, &openaimodel.ChatModelConfig{
+	connector, err := openaimodel.NewChatModel(ctx, &openaimodel.ChatModelConfig{
 		APIKey:      cfg.APIKey,
 		Model:       cfg.Model,
 		BaseURL:     miniMaxOpenAIBaseURL,
 		Temperature: &temperature,
 	})
+	return newEinoChatModelAdapter(connector, err)
 }
 ```
 
@@ -248,7 +274,7 @@ ProfileLoader -> 校验 Profile.name 唯一
   -> ProviderRegistry 找到 provider.name 对应工厂
   -> 合并实例级 ProviderDefinition 与 ProfileProviderConfig
   -> 工厂读取合并后的 ProviderConfig
-  -> 创建 ToolCallingChatModel
+  -> 创建 Eino connector 并包装为 OryxOS ChatModel
   -> 以 Profile.name 注册模型实例
 ```
 
@@ -256,12 +282,12 @@ ProfileLoader -> 校验 Profile.name 唯一
 
 ### 3.4 DeepSeek 与 MiniMax
 
-- **DeepSeek**：使用 Eino-ext DeepSeek connector，不传 `BaseURL`，沿用 connector 的官方默认地址，工厂返回 `model.ToolCallingChatModel`。
+- **DeepSeek**：使用 Eino-ext DeepSeek connector，不传 `BaseURL`，沿用 connector 的官方默认地址，工厂将 connector 包装为 OryxOS `llm.ChatModel`。
 - **MiniMax**：使用 Eino-ext OpenAI connector，工厂固定配置 MiniMax 官方 OpenAI 兼容 API 地址；用户只提供 API key，模型名和 temperature 仍由 Profile 选择。
 - 两条路径都要验证 Function Calling、多轮 Tool 消息累积、错误归一化和 token 记录。
 - Web 核心接口只做同步响应；connector 的 Stream 能力作为兼容性回归项，不等于核心阶段提供 SSE。
 
-建议导入边界：
+只允许在 Provider 适配层使用的导入：
 
 ```go
 import (
@@ -300,7 +326,7 @@ Provider 适配层统一返回可判别错误类别：配置错误、认证错�
 flowchart TD
     A["接收统一 AgentRequest"] --> B["解析 Profile 与 Session"]
     B --> C["组装 Prompt 和 Tool schemas"]
-    C --> D["调用 ToolCallingChatModel"]
+    C --> D["调用 OryxOS ChatModel"]
     D --> E{"存在 Tool Calls?"}
     E -- 否 --> F["持久化最终回复并返回"]
     E -- 是 --> G["逐个执行 Tool 并记录"]
@@ -392,20 +418,29 @@ scheduler:        channel="scheduler" + user_id=schedule.id + profile.name
 
 ## 6. Tool、MCP 与 Sandbox
 
-### 6.1 Eino Tool 接口边界
+### 6.1 OryxOS Tool 接口边界
 
-Eino 的 `tool.BaseTool` 只提供 Tool 元数据；可执行 Tool 需要实现嵌入 `BaseTool` 的 `tool.InvokableTool`，其核心执行方法是 `InvokableRun`。因此需求中的“实现 BaseTool”在代码层落地为“以 BaseTool 为元数据基线，实现 InvokableTool 执行接口”。
+Tool 实现使用 OryxOS 自有端口，不导入 Eino。`Info` 返回 `llm.ToolDefinition`，`Invoke` 接收模型生成的原始 JSON arguments 并返回文本结果：
+
+```go
+type InvokableTool interface {
+	Info(ctx context.Context) (llm.ToolDefinition, error)
+	Invoke(ctx context.Context, arguments string) (string, error)
+}
+```
+
+`Info` 只提供元数据，不可触发执行。只实现元数据而没有 `Invoke` 的对象不得进入 Registry。
 
 ```go
 type OryxTool struct {
-	Tool       tool.InvokableTool
+	Tool       InvokableTool
 	Retryable  bool
 	Idempotent bool
 	Timeout    time.Duration
 }
 ```
 
-`ToolRegistry` 注册 `OryxTool`，向模型暴露 Eino Tool schema；`ToolExecutor` 统一完成校验、执行、错误归一化和调用记录。不得只保存 `tool.BaseTool` 后在运行时做类型猜测。
+`ToolRegistry` 注册 `OryxTool`，向 Runtime 暴露 OryxOS `ToolDefinition`；`ToolExecutor` 统一完成校验、执行、错误归一化和调用记录。Provider 适配器在发起模型调用时才将 `ToolDefinition` 转为 Eino `schema.ToolInfo`。
 
 ### 6.2 九个内置 Tool
 
@@ -438,7 +473,7 @@ type OryxTool struct {
 |---|---|---|
 | 零代码 | SKILL.md + 复用 MCP server + Profile 引用 | `SkillLoader` + `McpConfigLoader` + MCP Client |
 | 轻代码 | 业务方自建 MCP server | 任意语言实现，OryxOS 作为 MCP client |
-| 重代码 | Go Tool 编译进二进制 | 实现 Eino `tool.InvokableTool` 并注册 |
+| 重代码 | Go Tool 编译进二进制 | 实现 OryxOS `InvokableTool` 并注册 |
 
 工作区不设置悬空的 `tools/` 配置目录。Go Tool 的注册由代码完成；MCP 连接由 `mcp_servers.yaml` 定义；业务语义由 SKILL.md 定义。
 
@@ -821,7 +856,8 @@ oryxos-go/
 │   ├── profile/             # ProfileLoader、ProfileRegistry
 │   ├── skill/               # SkillLoader
 │   ├── bootstrap/           # BootstrapLoader、Prompt 分段
-│   ├── provider/            # 工厂、DeepSeek/MiniMax 适配
+│   ├── llm/                 # OryxOS ChatModel 端口与领域类型
+│   ├── provider/            # 工厂、Eino/DeepSeek/MiniMax 适配
 │   ├── runtime/             # AgentService、ReActLoop、PromptBuilder
 │   ├── memory/              # MarkdownMemoryStore
 │   ├── session/             # SessionService、SessionStore
@@ -845,11 +881,12 @@ oryxos-go/
 
 ```text
 cmd -> app -> handler/channel/scheduler -> service/runtime
-runtime -> Eino core interfaces + domain ports
-provider/tool MCP/store -> concrete external libraries
+runtime/tool -> internal/llm domain ports
+provider -> internal/llm + Eino core/Eino-ext
+tool MCP/store -> concrete external libraries
 ```
 
-`runtime` 不导入 Gin、Cobra、GORM 或 Eino-ext；`web` 不直接导入 Provider connector 或 Store 实现。命名采用 Go 语义的 Handler/Store/Registry，避免 Java 风格 Controller/Repository/Lifecycle 类层级。
+`runtime` 不导入 Gin、Cobra、GORM、Eino core 或 Eino-ext；`web` 不直接导入 Provider connector 或 Store 实现。命名采用 Go 语义的 Handler/Store/Registry，避免 Java 风格 Controller/Repository/Lifecycle 类层级。
 
 ---
 
@@ -880,7 +917,7 @@ oryxos chat --profile <name>
   -> ConfigLoader 展开实例级 Provider 凭证环境变量
   -> ProfileLoader 逐个校验，坏 Profile 记录错误并跳过
   -> SkillLoader/McpConfigLoader 校验合法 Profile 的引用
-  -> ProviderFactory 合并两层配置并创建该 Profile 的 ToolCallingChatModel
+  -> ProviderFactory 合并两层配置并创建该 Profile 的 OryxOS ChatModel
   -> ToolRegistry 组装内置 + MCP + Go Tools
   -> PromptBuilder 加载 Bootstrap、Skill、MEMORY.md
   -> 进入 AgentService 对话链
@@ -894,7 +931,7 @@ CLI / HTTP / Scheduler
   -> AgentService 按 Profile.name 找 ProfileRuntime
   -> SessionService 获取或创建 Session
   -> PromptBuilder 组装带边界的上下文
-  -> ReActLoop 调 ToolCallingChatModel，并写 llm_calls
+  -> ReActLoop 调 OryxOS ChatModel，并写 llm_calls
   -> 如有 Tool Call，ToolExecutor 执行并写 tool_invocations
   -> 循环直至最终响应/错误/上限
   -> SessionService 保存完整消息历史
@@ -908,7 +945,7 @@ CLI / HTTP / Scheduler
   -> ToolRegistry 精确查名
   -> JSON 参数 schema 校验
   -> Sandbox 与 Profile 可用 Tool 列表校验
-  -> InvokableRun 或 MCP call
+  -> OryxOS InvokableTool.Invoke 或其 MCP 适配实现
   -> 仅满足可重试 + 幂等条件时最多重试三次
   -> 成功/失败统一写 tool_invocations
   -> 把 Tool message 追加回模型上下文
@@ -1060,7 +1097,7 @@ Prometheus `/metrics` 属于扩展端点，核心阶段不把它混入 10 个 AP
 - 工作区只有需求规定的五个子目录，无 `agents/`、`tools/`。
 - Memory 核心只出现 `MEMORY.md` 实现。
 - Scheduler 无核心任务表和管理 API。
-- Provider 业务边界是 `ToolCallingChatModel`，Eino-ext 只出现在工厂/connector 层。
+- Provider 业务边界是 OryxOS `llm.ChatModel`，Eino core/Eino-ext 只出现在 Provider 适配/工厂层。
 
 ---
 
@@ -1084,7 +1121,7 @@ Prometheus `/metrics` 属于扩展端点，核心阶段不把它混入 10 个 AP
 ## 18. 参考实现依据
 
 - [Eino core 模型接口](https://github.com/cloudwego/eino/blob/main/components/model/interface.go)
-- [Eino Tool 接口](https://github.com/cloudwego/eino/blob/main/components/tool/interface.go)
+- [Eino ChatModel 接口](https://github.com/cloudwego/eino/blob/main/components/model/interface.go)（仅 Provider 适配层使用）
 - [Eino-ext DeepSeek connector](https://github.com/cloudwego/eino-ext/tree/main/components/model/deepseek)
 - [官方 MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk)
 - [GORM 纯 Go SQLite dialector](https://github.com/glebarez/sqlite)（底层 `modernc.org/sqlite`）

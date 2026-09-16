@@ -2,7 +2,7 @@
 
 ReAct 是 OryxOS 的第二块核心能力，也是整个 Agent 最关键的一段代码。这节讲四件事：ReAct 是什么、动手前该想清楚什么、代码怎么写、做完怎么验。
 
-它依赖上一节的 Provider——每转一圈都要通过 Provider 调一次大模型。技术栈还是 Go 1.26 + Eino core；Eino-ext 只留在 Provider 工厂层，ReAct Runtime 不直接依赖具体厂商 connector。
+它依赖上一节的 Provider——每转一圈都要通过 Provider 调一次大模型。技术栈是 Go 1.26 + OryxOS `internal/llm`；Eino core/Eino-ext 只留在 Provider 适配层，ReAct Runtime 不导入 Eino。
 
 ---
 
@@ -30,7 +30,7 @@ ReAct 有个反直觉的地方：它是 Agent 的灵魂，但主循环的代码�
 
 ![动手前想清楚：ReActLoop 的边界（停止条件/上下文/累积）](../../website/public/images/class-17-2.svg)
 
-**第二，为什么自己写，不用框架现成的循环。** Eino ADK 带有现成的 Agent / ReAct 封装，拿来就能跑。但循环恰恰是 Agent 最需要自己掌控的地方——什么时候停、工具失败了怎么办、上下文太长了怎么截断、哪几步想换个模型，这些都得能自己调。用框架的黑盒，这些就动不了。所以核心阶段我们自己写这几十行，只复用 Eino core 的 `model.ToolCallingChatModel` 和 Tool schema，把控制权攥在手里。
+**第二，为什么自己写，不用框架现成的循环。** Eino ADK 带有现成的 Agent / ReAct 封装，拿来就能跑。但循环恰恰是 Agent 最需要自己掌控的地方——什么时候停、工具失败了怎么办、上下文太长了怎么截断、哪几步想换个模型，这些都得能自己调。所以核心阶段我们自己写循环，只依赖 OryxOS `llm.ChatModel` 和领域类型，把控制权和第三方边界都管住。
 
 **第三，几个坑，提前想到。** 这块最容易出事的就那么几处：
 
@@ -59,7 +59,7 @@ func (l *ReActLoop) Run(
 	userMessage string,
 	profile *profile.Profile,
 ) (string, error) {
-	session.Append(&schema.Message{Role: schema.User, Content: userMessage})
+	session.Append(llm.Message{Role: llm.RoleUser, Content: userMessage})
 
 	for i := 0; i < profile.Settings.MaxIterations; i++ { // 默认 10，防死循环
 		messages, err := l.promptBuilder.Build(ctx, session, profile)
@@ -71,13 +71,13 @@ func (l *ReActLoop) Run(
 		if err != nil {
 			return "", err
 		}
-		session.Append(resp) // 保存完整 assistant 响应，包括 ToolCalls
+		session.Append(resp.Message) // 保存完整 assistant 响应，包括 ToolCalls
 
-		if len(resp.ToolCalls) == 0 {
-			return resp.Content, nil // 没有工具调用，收尾
+		if len(resp.Message.ToolCalls) == 0 {
+			return resp.Message.Content, nil // 没有工具调用，收尾
 		}
 
-		for _, call := range resp.ToolCalls { // 按模型返回顺序串行执行
+		for _, call := range resp.Message.ToolCalls { // 按模型返回顺序串行执行
 			result, err := l.toolExecutor.Execute(ctx, session.ID, profile, call)
 			session.AppendToolMessage(call.ID, result, err)
 			if err != nil {
@@ -90,14 +90,14 @@ func (l *ReActLoop) Run(
 }
 ```
 
-这段代码是职责和流程示意，具体 Session 与 Tool 结果类型以本项目最终接口为准；Eino API 必须以 `go.mod` 锁定版本的 `go doc` 和模块源码为准，不能把课件示例当成 API 存在性证据。
+这段代码是职责和流程示意，具体 Session 与 Tool 结果类型以本项目最终接口为准。Runtime 只使用 `internal/llm`，不应因 Eino API 变化而修改。
 
 一行行看它在干嘛：
 
 - `Run(ctx, ...)`——`context.Context` 从 CLI / Web / Scheduler 一路传到 LLM 和 Tool，用于取消与超时，不能在中途换成 `context.Background()`。
 - `for i < profile.Settings.MaxIterations`——这就是那个“最大轮数”的兜底，默认 10。循环不是无限转的，转够就返回明确的迭代上限错误并保存现场，坑一（死循环）在这拦住。
 - `promptBuilder.Build(...)`——把这一轮要发给模型的消息和上下文拼好（下面细讲）。
-- `providerService.Chat(ctx, session.ID, profile, messages)`——通过上一节的 Provider 调一次大模型，拿回 `*schema.Message`。这里要传 `session.ID`：上一节 Provider 的 `Chat` 方法签名带了 `sessionID`，因为 `llm_calls` 审计表按 Session 关联，这里不传，Provider 那边就没法写这一列。
+- `providerService.Chat(ctx, session.ID, profile, messages)`——通过上一节的 Provider 调一次大模型，拿回 OryxOS `llm.Response`。这里要传 `session.ID`，因为 `llm_calls` 审计表按 Session 关联。
 - `session.Append(resp)`——**先把完整响应存回 Session 再说**，不能只保存 `resp.Content`。Tool Call 的 ID 和参数也在 assistant 消息里，下一轮和事后审计都需要它，对应坑三。
 - `len(resp.ToolCalls) == 0`——模型这轮没要调工具，说明它能给答复了，直接返回，循环结束。这就是前面说的“停止条件”。
 - `for _, call := range resp.ToolCalls`——模型一次返回多个 Tool Call 时，严格按原顺序逐个交给 `ToolExecutor` 执行；同样带上 `session.ID`，因为 `tool_invocations` 表也要关联 Session。每个结果都转成与 call ID 对应的 Tool message 追加回 Session，然后进入下一轮。执行权只在 `ReActLoop + ToolExecutor`，不能交给 Eino ADK，也不并行执行。
@@ -106,7 +106,7 @@ func (l *ReActLoop) Run(
 
 注意“长期记忆”和“会话历史”是两码事，别混在一起说：长期记忆是跨会话都在的 `MEMORY.md`，会话历史只是这一次对话到目前为止的往来记录。会话历史先只留最近 N 轮，默认 20；如果仍超过模型上下文上限，再继续截断早期消息——这是坑二的解法。拼 prompt 的逻辑全在这里，循环那边不用操心。
 
-**配角二：ToolExecutor。** 从 `ToolRegistry` 里精确找到模型要调的工具，先做 JSON 参数 schema、当前 Profile 可用 Tool 列表和 Sandbox / 白名单检查（Sandbox 的完整设计在第 23、24 节细讲），再调用 Eino `tool.InvokableTool.InvokableRun` 或 MCP client，把结果包装成 Tool message 返回，同时写一条调用记录——**成功要记、失败也要记**。`tool_invocations` 表本来就有 `success` / `error_message` 两列，跟上一节 Provider 的审计是同一个口径：一次工具调用不管成没成，事后都得能查到。
+**配角二：ToolExecutor。** 从 `ToolRegistry` 里精确找到模型要调的工具，先做 JSON 参数 schema、当前 Profile 可用 Tool 列表和 Sandbox / 白名单检查（Sandbox 的完整设计在第 23、24 节细讲），再调用 OryxOS `InvokableTool.Invoke` 的内置或 MCP 适配实现，把结果包装成 Tool message 返回，同时写一条调用记录——**成功要记、失败也要记**。
 
 工具执行只在这一个地方发生——这也是上一节为什么不能使用 Eino ADK 自动执行的原因：执行权必须收在这里，不能有第二条路。只有错误明确可重试，并且工具幂等或带可靠幂等键时才允许有限重试；`write_file`、`shell`、`http_post`、`notify`、`save_memory` 默认不自动重试。`tool_invocations` 的 GORM Model、Store 和手工 SQL migration 也归这节交付；SQLite 继续使用 `github.com/glebarez/sqlite`，保持 `CGO_ENABLED=0` 可构建。
 
@@ -185,9 +185,9 @@ func TestReActLoopStopsAtMaxIterations(t *testing.T) {
 }
 
 func TestReActLoopPreservesAssistantToolCallAndMatchingToolMessage(t *testing.T) {
-	provider := &fakeProvider{responses: []*schema.Message{
+	provider := &fakeProvider{responses: []llm.Response{
 		responseWithToolCall(toolCallWithID("call-1")),
-		{Role: schema.Assistant, Content: "穿薄外套"},
+		{Message: llm.Message{Role: llm.RoleAssistant, Content: "穿薄外套"}},
 	}}
 	loop := newTestLoop(t, provider)
 

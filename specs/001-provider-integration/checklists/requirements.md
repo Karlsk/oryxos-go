@@ -42,6 +42,7 @@
 - [x] DeepSeek uses its native connector default endpoint; MiniMax owns a fixed endpoint inside its factory; neither endpoint is user-configurable.
 - [x] Model instances are indexed by Profile name and full reloads atomically rebuild the isolated snapshot.
 - [x] Tool metadata is bound without Tool execution; Eino ADK, fallback, retries, streaming, and ReAct iteration are absent.
+- [x] The approved architecture amendment defines an OryxOS-owned `llm.ChatModel` boundary and confines all Eino core/Eino-ext types to `internal/provider`.
 - [x] Exactly one hand-maintained `llm_calls` migration was added; `AutoMigrate` and production `mattn/go-sqlite3` imports are absent.
 - [x] The generated workspace remains five directories and six initial files, with no credential fields in `profiles/default.yaml`.
 - [x] `go test ./...`, `go vet ./...`, and the no-CGO build all pass; live tests are opt-in and were safely skipped without credentials.

@@ -6,7 +6,7 @@
 
 | Module | Locked version | Purpose |
 |---|---:|---|
-| `github.com/cloudwego/eino` | `v0.9.19` | Runtime `model.ToolCallingChatModel` and `schema.Message` boundary |
+| `github.com/cloudwego/eino` | `v0.9.19` | Provider-internal connector and schema adaptation |
 | `github.com/cloudwego/eino-ext/components/model/deepseek` | `v0.1.7` | Native DeepSeek connector |
 | `github.com/cloudwego/eino-ext/components/model/openai` | `v0.1.13` | MiniMax through its OpenAI-compatible endpoint |
 | `gorm.io/gorm` | `v1.31.2` | `LlmCall` persistence |
@@ -53,12 +53,23 @@ Both connector modules declare Eino `v0.7.13` as their minimum. A local source d
 - Fail the entire process for one malformed Profile: rejected by the approved lesson-16 isolation behavior.
 - Add `global.yaml` to `.oryxos init`: rejected because the core workspace contract is fixed at five directories and six initialization files.
 
-## Decision 3: Register factories by vendor and instances by Profile
+## Decision 3: Own the runtime port and isolate Eino in Provider
+
+**Decision**: Define `ChatModel`, `Request`, `Response`, `Message`, `ToolDefinition`, `ToolCall`, and `Usage` in `internal/llm`. The core-stage message contract preserves text roles, names, reasoning content, complete assistant Tool calls, Tool-result correlation IDs, JSON arguments, JSON Schema, token usage, and finish reason. An adapter in `internal/provider` performs all Eino conversions.
+
+**Rationale**: Eino remains valuable for connector protocol maintenance, but its 0.x API and broad schema types should not determine Runtime, Tool, Handler, or Scheduler contracts. The narrow port makes those packages independently testable and confines a future connector replacement to Provider.
+
+**Alternatives considered**:
+
+- Use Eino core as the Runtime boundary: rejected because `schema.Message` and `schema.ToolInfo` would spread into later ReAct and Tool lessons.
+- Reimplement vendor HTTP protocols: rejected because OryxOS would inherit authentication, Function Calling, error-shape, and compatibility maintenance without adding core Agent OS value.
+
+## Decision 4: Register factories by vendor and instances by Profile
 
 **Decision**: `ProviderRegistry` owns two maps:
 
 - `factories[provider.name]ModelFactory`
-- `models[profile.name]model.ToolCallingChatModel`
+- `models[profile.name]llm.ChatModel`
 
 For each valid Profile, merge its choice with the declared connection and call the matching factory once. Reject duplicates instead of overwriting.
 
@@ -69,19 +80,19 @@ For each valid Profile, merge its choice with the declared connection and call t
 - Cache one model by Provider name: rejected because two Profiles using the same vendor can select different models and temperatures.
 - Dynamically discover connectors: rejected because the core supports exactly two Providers and must not silently route.
 
-## Decision 4: Bind Tool schemas without executing Tools
+## Decision 5: Bind Tool schemas without executing Tools
 
-**Decision**: Inject a `ToolSchemaAdapter` into `ProviderService`. It resolves the ordered Profile Tool names through a metadata-only source and returns `[]*schema.ToolInfo`. `Chat` calls `WithTools` only when descriptions are present, then calls `Generate`; it returns the resulting `schema.Message` unchanged.
+**Decision**: `ProviderService` resolves ordered Profile Tool names to OryxOS `[]llm.ToolDefinition` and calls an OryxOS `llm.ChatModel`. The Provider-internal Eino adapter converts definitions to `[]*schema.ToolInfo`, calls `WithTools` only when definitions are present, invokes `Generate`, and converts the complete response back to `llm.Response`.
 
-**Rationale**: This supplies Function Calling metadata while keeping execution authority in the future `ReActLoop + ToolExecutor`. The adapter boundary lets lesson 20's `ToolRegistry` provide metadata later without making lesson 16 implement Tools.
+**Rationale**: This supplies Function Calling metadata while keeping execution authority in the future `ReActLoop + ToolExecutor`. Lesson 20's `ToolRegistry` can provide OryxOS metadata without importing Eino, and connector replacement affects only `internal/provider`.
 
 **Alternatives considered**:
 
 - Use Eino ADK automatic Tool execution: prohibited by the constitution.
 - Invent incomplete name-only schemas from `Profile.Tools`: rejected because the model needs truthful parameter schemas.
-- Put Eino-ext connector types into runtime or Profile packages: rejected because Eino-ext is restricted to the Provider factory edge.
+- Put Eino core or Eino-ext types into runtime, Tool, or Profile packages: rejected because all Eino types are restricted to the Provider adapter edge.
 
-## Decision 5: Persist exactly one audit record for every call attempt
+## Decision 6: Persist exactly one audit record for every call attempt
 
 **Decision**: `ProviderService.Chat` measures the connector call, extracts available usage, sanitizes any failure, and asks `LlmCallRepository` to insert one record before returning. Missing usage becomes zero. A connector failure is returned only after its failed audit row is stored. A persistence failure is never swallowed and prevents a successful result from being reported as fully handled.
 
@@ -100,7 +111,7 @@ For each valid Profile, merge its choice with the declared connection and call t
 - Insert before calling the model and update later: rejected because it creates partial state and a second write path.
 - Wrap the external model call in a database transaction: rejected because external latency must not hold SQLite locks.
 
-## Decision 6: Use hand-maintained idempotent SQL
+## Decision 7: Use hand-maintained idempotent SQL
 
 **Decision**: Add a repository-owned SQL migration for `llm_calls` using `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`. Execute it with `DB.Exec`; do not call `AutoMigrate` and do not add a fourth migration-history business table.
 
@@ -111,13 +122,13 @@ For each valid Profile, merge its choice with the declared connection and call t
 - GORM `AutoMigrate`: rejected by the approved architecture.
 - A schema-migrations table in lesson 16: rejected because it would violate the fixed core-table count unless later governance explicitly distinguishes infrastructure metadata.
 
-## Decision 7: Test through deterministic seams and opt-in live smoke tests
+## Decision 8: Test through deterministic seams and opt-in live smoke tests
 
-**Decision**: Default tests use fake factories, fake `ToolCallingChatModel` implementations, a fake Tool metadata source, and temporary SQLite. Live tests carry `//go:build integration`, require the relevant credentials, and separately exercise DeepSeek and MiniMax.
+**Decision**: Default service tests use fake OryxOS `llm.ChatModel` implementations; adapter tests use a fake Eino `ToolCallingChatModel`; repository tests use temporary SQLite. Live tests carry `//go:build integration`, require the relevant credentials, and separately exercise DeepSeek and MiniMax.
 
 **Rationale**: Unit tests must be fast, deterministic, and free of paid external calls. Live smoke tests verify credentials, endpoint behavior, connector compatibility, non-empty responses, and successful audit insertion without destabilizing default CI.
 
 **Alternatives considered**:
 
 - Run live Provider calls in ordinary `go test ./...`: rejected because it couples CI reliability and cost to external APIs.
-- Mock the concrete Eino-ext types: rejected because OryxOS should mock the Eino core interface boundary.
+- Expose Eino core as the runtime mocking boundary: rejected because OryxOS now owns the runtime port; Eino fakes belong only in Provider adapter tests.

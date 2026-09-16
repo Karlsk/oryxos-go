@@ -6,40 +6,42 @@
 type ModelFactory func(
 	ctx context.Context,
 	cfg ProviderConfig,
-) (model.ToolCallingChatModel, error)
+) (llm.ChatModel, error)
 
 type LlmCallRecorder interface {
 	Create(ctx context.Context, call *LlmCall) error
 }
 
-type ToolSchemaAdapter interface {
-	ToEinoToolInfos(ctx context.Context, names []string) ([]*schema.ToolInfo, error)
+type ToolSchemaResolver interface {
+	Resolve(ctx context.Context, names []string) ([]llm.ToolDefinition, error)
 }
 ```
 
-The concrete Eino-ext connector imports are confined to factory construction in `internal/provider`.
+Eino core and Eino-ext imports are confined to adapters and factory construction in `internal/provider`. Runtime and Tool packages use only `internal/llm`.
 
 ## Factory registration
 
 ```go
 const miniMaxOpenAIBaseURL = "https://api.minimax.cn/v1"
 
-factories["deepseek"] = func(ctx context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
-	return deepseek.NewChatModel(ctx, &deepseek.ChatModelConfig{
+factories["deepseek"] = func(ctx context.Context, cfg ProviderConfig) (llm.ChatModel, error) {
+	connector, err := deepseek.NewChatModel(ctx, &deepseek.ChatModelConfig{
 		APIKey:      cfg.APIKey,
 		Model:       cfg.Model,
 		Temperature: cfg.Temperature,
 	})
+	return newEinoChatModelAdapter(connector, err)
 }
 
-factories["minimax"] = func(ctx context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
+factories["minimax"] = func(ctx context.Context, cfg ProviderConfig) (llm.ChatModel, error) {
 	temperature := cfg.Temperature
-	return openai.NewChatModel(ctx, &openai.ChatModelConfig{
+	connector, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		APIKey:      cfg.APIKey,
 		BaseURL:     miniMaxOpenAIBaseURL,
 		Model:       cfg.Model,
 		Temperature: &temperature,
 	})
+	return newEinoChatModelAdapter(connector, err)
 }
 ```
 
@@ -61,8 +63,8 @@ func (service *ProviderService) Chat(
 	ctx context.Context,
 	sessionID string,
 	profile *profile.Profile,
-	messages []*schema.Message,
-) (*schema.Message, error)
+	messages []llm.Message,
+) (llm.Response, error)
 ```
 
 Preconditions:
@@ -74,17 +76,17 @@ Behavior:
 
 1. Look up the model by `profile.Name`.
 2. Resolve ordered Tool metadata from `profile.Tools`.
-3. If Tool metadata is non-empty, derive a request model with `WithTools`; never execute Tools.
-4. Call `Generate` once with the supplied message slice and the Profile's model/temperature options required by the selected construction policy.
-5. Measure duration and extract available token usage from `ResponseMeta.Usage`; use zero when unavailable.
+3. Pass OryxOS messages and ordered Tool definitions to the Profile-bound `llm.ChatModel`; never execute Tools.
+4. The Eino adapter converts the request, binds `schema.ToolInfo` when present, and calls the connector's `Generate` exactly once.
+5. Measure duration and extract usage from the OryxOS response; use zero when unavailable.
 6. Insert exactly one `llm_calls` record before returning.
-7. Return the connector's assistant message unchanged, including Tool-call IDs and arguments.
+7. Return the OryxOS response with assistant content, reasoning content, Tool-call IDs/arguments, usage, and finish reason preserved.
 
 Failure behavior:
 
 - Provider errors are sanitized, recorded with `success=false`, and returned without retry or fallback.
-- Tool metadata conversion or `WithTools` failure occurs before a Provider call and therefore does not create an LLM attempt row.
+- Tool metadata resolution or Eino schema binding failure occurs before a Provider call and therefore does not create an LLM attempt row.
 - Audit insertion failure is returned explicitly and is never hidden by an otherwise successful Provider response.
 - Cancellation and deadlines flow through the caller's context.
 
-Non-goals: Tool execution, ReAct iteration, streaming API exposure, fallback, retry, circuit breaking, cost reporting, and vendor-specific model types outside `internal/provider`.
+Non-goals: Tool execution, ReAct iteration, streaming API exposure, fallback, retry, circuit breaking, cost reporting, and any Eino type outside `internal/provider`.

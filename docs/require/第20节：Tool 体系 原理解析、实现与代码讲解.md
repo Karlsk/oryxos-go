@@ -2,7 +2,7 @@
 
 Provider 让 Agent 会调模型，ReAct 让它会思考，但到现在它还只会“想”和“说”。这节讲的 Tool，是让 Agent 真正能动手干事的那双手。四件事照旧：Tool 是什么、动手前该想清楚什么、代码怎么写、怎么用和怎么验。
 
-技术栈是 Go 1.26 + Eino core 的 Tool 接口 + 官方 MCP Go SDK `github.com/modelcontextprotocol/go-sdk/mcp`。下面的代码是示意；第三方构造函数和类型必须在实现前用 `go.mod`、模块缓存和 `go doc` 核实，不能根据示例臆造。
+技术栈是 Go 1.26 + OryxOS 自有 `InvokableTool`/`llm.ToolDefinition` + 官方 MCP Go SDK `github.com/modelcontextprotocol/go-sdk/mcp`。Tool 包不导入 Eino；第三方 MCP API 必须在实现前用 `go.mod`、模块缓存和 `go doc` 核实。
 
 ---
 
@@ -25,9 +25,9 @@ OryxOS 的 Tool 分两类：
 
 ## 二、动手前先想清楚几件事
 
-**第一，先定统一的工具抽象，屏蔽“来源”。** 内置的、业务方用 Go 编译进来的、通过 MCP server 接进来的，来源五花八门。如果 ReAct 循环要分来源区别对待，代码会很快乱掉。所以所有可执行 Tool 最终都要实现 Eino `tool.InvokableTool`，再包装成 `OryxTool` 注册到同一个 `ToolRegistry`。**ReAct 循环只把模型返回的 Tool Call 交给 `ToolExecutor`，完全不感知背后是内置 Tool、Go Tool 还是 MCP Tool。**
+**第一，先定统一的工具抽象，屏蔽“来源”。** 内置的、业务方用 Go 编译进来的、通过 MCP server 接进来的，来源五花八门。所有可执行 Tool 最终都实现 OryxOS `InvokableTool`，再包装成 `OryxTool` 注册到同一个 `ToolRegistry`。**ReAct 循环只把 OryxOS `llm.ToolCall` 交给 `ToolExecutor`，完全不感知背后是内置 Tool、Go Tool 还是 MCP Tool。**
 
-Eino v0.9.19 的真实边界要分清：`tool.BaseTool.Info(ctx)` 只提供 `*schema.ToolInfo` 元数据；只有嵌入 `BaseTool` 并实现 `InvokableRun` 的 `tool.InvokableTool` 才能执行。只实现 `BaseTool` 会出现“模型看得见 schema，但系统根本执行不了”的悬空工具。
+OryxOS 边界要分清：`Info(ctx)` 只提供 `llm.ToolDefinition` 元数据；`Invoke(ctx, arguments)` 才执行。注册类型必须同时具备两者，避免“模型看得见 schema，但系统根本执行不了”的悬空工具。
 
 **第二，Plugin Tool 给三档接入方式，门槛从低到高。**
 
@@ -37,7 +37,7 @@ Eino v0.9.19 的真实边界要分清：`tool.BaseTool.Info(ctx)` 只提供 `*sc
 |---|---|---|---|
 | 写 SKILL.md + 复用 MCP server | 零代码 | ⭐⭐⭐ | Profile 引用 Skill 和 MCP server，LLM 自己组合能力 |
 | 自己实现 MCP server | 轻代码 | ⭐⭐ | 任意语言实现，OryxOS 使用官方 Go SDK 作为 MCP client |
-| 编写 Go Tool | 重代码 | ⭐ | 实现 Eino `tool.InvokableTool`，编译进 OryxOS 二进制 |
+| 编写 Go Tool | 重代码 | ⭐ | 实现 OryxOS `InvokableTool`，编译进 OryxOS 二进制 |
 
 选择标准就一句话：**能用方式一就不用方式二，能用方式二就不用方式三。** 方式一让业务方只描述“想干什么”，具体调哪个 Tool、怎么组合交给 LLM。Skill 是 Prompt 上下文，不是 Tool，不能注册进 `ToolRegistry`。
 
@@ -53,11 +53,11 @@ Eino v0.9.19 的真实边界要分清：`tool.BaseTool.Info(ctx)` 只提供 `*sc
 
 Tool 相关代码按职责放在 `internal/tool`：内置 Tool 在 `internal/tool/builtin`，MCP 适配在 `internal/tool/mcp`，Registry 和 Executor 留在包根。外部 MCP SDK 只能出现在 MCP 适配层，Runtime 不直接依赖它。
 
-**先看统一包装 OryxTool。** Eino 接口提供元数据和执行能力，OryxOS 包装运行策略：
+**先看统一包装 OryxTool。** OryxOS 自有接口提供元数据和执行能力，`OryxTool` 再包装运行策略：
 
 ```go
 type OryxTool struct {
-	Tool       tool.InvokableTool
+	Tool       InvokableTool
 	Retryable  bool
 	Idempotent bool
 	Timeout    time.Duration
@@ -65,7 +65,7 @@ type OryxTool struct {
 ```
 
 - `Tool.Info(ctx)` 返回名称、描述和 JSON 参数 schema，Provider 用它生成 Function Calling 定义。
-- `Tool.InvokableRun(ctx, argumentsInJSON, opts...)` 执行一次调用，参数是模型返回的 JSON 字符串，结果是回填给模型的字符串。
+- `Tool.Invoke(ctx, argumentsInJSON)` 执行一次调用，参数是模型返回的 JSON 字符串，结果是回填给模型的字符串。
 - `Retryable` 表示该工具是否允许对明确的瞬时错误进入重试判定，不代表所有错误都重试。
 - `Idempotent` 表示重复执行是否安全；有副作用的 Tool 默认是 `false`。
 - `Timeout` 是每次工具执行的硬上限，不能无限占住 ReAct 循环。
@@ -99,7 +99,7 @@ func (r *Registry) Register(ctx context.Context, candidate OryxTool) error {
 **ToolExecutor 负责唯一执行入口。** 它接收 `context.Context`、`session_id`、当前 Profile 允许的 Tool 集合和模型 Tool Call，按以下顺序执行：
 
 1. 按名称精确查找，确认当前 Profile 允许使用；
-2. 按 `ToolInfo` 的 JSON schema 校验参数；
+2. 按 `llm.ToolDefinition` 的 JSON schema 校验参数；
 3. 创建带 `OryxTool.Timeout` 的子 Context；
 4. 进入具体 Tool，由 Tool 在副作用前调用统一 Sandbox；
 5. 只在“错误明确可重试 + Tool 幂等/有幂等键”时最多重试三次；
@@ -108,7 +108,7 @@ func (r *Registry) Register(ctx context.Context, candidate OryxTool) error {
 
 数据库短事务只包调用记录写入，不能把外部 Tool 调用放在事务里。参数、结果和错误入库前统一做大小限制和脱敏。
 
-**一个内置 Tool 长什么样。** 拿 `http_get` 举例，它必须实现 `Info` 和 `InvokableRun`：
+**一个内置 Tool 长什么样。** 拿 `http_get` 举例，它必须实现 `Info` 和 `Invoke`：
 
 ```go
 type HTTPGetTool struct {
@@ -116,15 +116,11 @@ type HTTPGetTool struct {
 	client  *http.Client
 }
 
-func (t *HTTPGetTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
+func (t *HTTPGetTool) Info(ctx context.Context) (llm.ToolDefinition, error) {
 	return httpGetToolInfo(), nil // name/description/params schema 均非空
 }
 
-func (t *HTTPGetTool) InvokableRun(
-	ctx context.Context,
-	argumentsInJSON string,
-	_ ...tool.Option,
-) (string, error) {
+func (t *HTTPGetTool) Invoke(ctx context.Context, argumentsInJSON string) (string, error) {
 	var input struct {
 		URL string `json:"url"`
 	}
@@ -164,29 +160,25 @@ servers:
 
 stdio 要求 `name/transport/command`，可选 `args/env`；remote 要求 `name/transport/url`，认证通过环境变量注入。Profile 的 `mcp_servers` 只引用名称，不复制连接细节。配置名称必须唯一，未知 transport、缺字段或缺环境变量在启动加载阶段明确失败并脱敏；配置修改重启生效。
 
-`McpClientService` 使用官方 MCP Go SDK 为 Profile 引用的 server 建立或复用 client，调用 `tools/list`，再把每个 MCP Tool 包装成实现 `tool.InvokableTool` 的 `McpToolAdapter` 注册到同一个 Registry。进程关闭时统一释放 client。因为官方 SDK API 会随锁定版本变化，课件不臆造构造函数；实现前必须在加入 `go.mod` 的实际版本中核实 stdio、remote、`tools/list` 和 `tools/call` API。
+`McpClientService` 使用官方 MCP Go SDK 为 Profile 引用的 server 建立或复用 client，调用 `tools/list`，再把每个 MCP Tool 包装成实现 OryxOS `InvokableTool` 的 `McpToolAdapter` 注册到同一个 Registry。进程关闭时统一释放 client。因为官方 SDK API 会随锁定版本变化，课件不臆造构造函数；实现前必须在加入 `go.mod` 的实际版本中核实 stdio、remote、`tools/list` 和 `tools/call` API。
 
 ```go
 type McpToolAdapter struct {
 	client MCPToolCaller // 对官方 SDK client 的窄内部端口
-	info   *schema.ToolInfo
+	info   llm.ToolDefinition
 	name   string
 }
 
-func (a *McpToolAdapter) Info(context.Context) (*schema.ToolInfo, error) {
+func (a *McpToolAdapter) Info(context.Context) (llm.ToolDefinition, error) {
 	return a.info, nil
 }
 
-func (a *McpToolAdapter) InvokableRun(
-	ctx context.Context,
-	argumentsInJSON string,
-	_ ...tool.Option,
-) (string, error) {
+func (a *McpToolAdapter) Invoke(ctx context.Context, argumentsInJSON string) (string, error) {
 	return a.client.CallTool(ctx, a.name, argumentsInJSON)
 }
 ```
 
-关键就两条：**注册时**把 MCP 返回的名称、描述、输入 schema 无损映射到 Eino `ToolInfo`，并在重名时失败；**执行时**原样转发 JSON 参数，把结果归一化为 Tool message。MCP Tool 也必须经过当前 Profile 过滤、统一超时、Sandbox 策略和 `tool_invocations`，不能另开旁路。
+关键就两条：**注册时**把 MCP 返回的名称、描述、输入 schema 无损映射到 OryxOS `llm.ToolDefinition`，并在重名时失败；**执行时**原样转发 JSON 参数，把结果归一化为 Tool message。MCP Tool 也必须经过当前 Profile 过滤、统一超时、Sandbox 策略和 `tool_invocations`，不能另开旁路。
 
 实例级 MCP 配置非法时启动 fail-fast；某个已正确配置的外部 server 临时连接失败时记录脱敏 WARN、隔离该连接并让其他 server 继续初始化，引用它的 Profile 在使用相关 Tool 时得到明确不可用错误，不能静默换成别的 Tool。
 
@@ -209,7 +201,7 @@ Tool 体系的 harness 分四块，真实网络和真实 MCP server 不进入默
 
 | 测试文件 | 覆盖的验收点 |
 |---|---|
-| `registry_test.go` | 注册的每个 Tool 都是 `tool.InvokableTool`；`Info` 的 name/description/params schema 非空；重名失败；按 Profile 过滤后集合不多不少 |
+| `registry_test.go` | 注册的每个 Tool 都是 OryxOS `InvokableTool`；`Info` 的 name/description/input schema 非空；重名失败；按 Profile 过滤后集合不多不少 |
 | `executor_test.go` | 名称和参数校验；多个 Tool Call 串行且顺序不变；超时/取消传播；成功失败均写审计；仅可重试且幂等时最多重试三次；非幂等 Tool 只执行一次 |
 | `file_test.go` / `shell_test.go` / `http_test.go` | 每个 Tool 都覆盖“正常执行 + 越界拦截 + 输入/输出限制”；路径逃逸、Shell 字符串拼接、HTTP 重定向绕过都有回归测试 |
 | `config_test.go` / `adapter_test.go` / `client_test.go` | stdio/remote 严格解析、环境变量脱敏；`tools/list` schema 映射；`tools/call` 参数原样转发；重名检测；一个 server 失联不影响其他合法连接 |
@@ -264,7 +256,7 @@ MCP 真实互操作另用 `//go:build integration` 测试显式运行，验证�
                   mcp_servers 引用要复用的 MCP server。
 方式二（轻代码）：在 .oryxos/mcp_servers.yaml 声明自己实现的 MCP server，
                   OryxOS 作为 client 连接。
-方式三（重代码）：用 Go 实现 Eino tool.InvokableTool，包装成 OryxTool 后编译注册。
+方式三（重代码）：用 Go 实现 OryxOS InvokableTool，包装成 OryxTool 后编译注册。
 ```
 
 工作区不创建 `tools/` 目录。Go Tool 由代码注册，MCP 连接只来自 `mcp_servers.yaml`，业务语义放在 SKILL.md。用 `oryxos tool list` 查看当前注册并对所选 Profile 可用的 Tool。

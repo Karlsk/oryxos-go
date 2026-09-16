@@ -131,7 +131,7 @@ CGO_ENABLED=0 go build ./cmd/oryxos
 计划必须写明：
 
 - Go 1.26+ 以及 `AGENTS.md` 和 `TechnicalSolution.md` 中与本节相关的精确技术栈；
-- 运行时以 Eino core `model.ToolCallingChatModel` 为边界，Eino-ext 只出现在 Provider 工厂中，禁止 Eino ADK 自动执行 Tool；
+- 运行时以 OryxOS `internal/llm.ChatModel` 和自有领域类型为边界，Eino core/Eino-ext 只出现在 `internal/provider` 适配与工厂中，禁止 Eino ADK 自动执行 Tool；
 - 按当前依赖方向放入 `internal/`。不得机械翻译 Java 模块名，必须使用 `AGENTS.md` 和 `TechnicalSolution.md` 规定的 Go 包结构；
 - 涉及时必须保持模型实例按 Profile 隔离、同步 JSON、Tool 串行执行、`context.Context` 贯穿、纯 Go SQLite 和所有核心固定数量；
 - 凭证使用环境变量占位符，日志和错误必须脱敏；
@@ -158,7 +158,7 @@ CGO_ENABLED=0 go build ./cmd/oryxos
 1. 写代码前核实第三方 API；
 2. 先写最小且有意义的测试，并观察它因目标行为尚未实现而失败；
 3. 只实现本节交付物，保留既有字面量与公共契约；
-4. 把 Eino-ext、Gin、Cobra、GORM 和 MCP 依赖留在文档规定的边缘层；
+4. 把 Eino core/Eino-ext、Gin、Cobra、GORM 和 MCP 依赖留在文档规定的边缘层；Eino 仅允许出现在 `internal/provider`；
 5. Go 测试标识符使用 ASCII 英文 `Test...`；需要与课程对号时，可在子测试名或注释中保留中文原文。示意代码必须适配真实 API，但断言行为逐条保真；
 6. 运行目标包测试，格式化修改过的 Go 文件，失败立即修复。
 
@@ -186,7 +186,7 @@ CGO_ENABLED=0 go build ./cmd/oryxos
    - Session 身份只由 SessionService 生成；
    - `context.Context` 贯穿调用链，Tool 串行执行，不引入未批准的 goroutine 编排；
    - ReActLoop 保有 Tool 执行权，不存在 Eino ADK 自动执行路径；
-   - `runtime` 与 `web` 的依赖边界保持正确；
+   - `runtime` 与 `web` 的依赖边界保持正确，Eino 类型不离开 `internal/provider`；
    - 核心阶段只存在三张 SQLite 表，无 CGO 单二进制契约保持有效；
 6. 列出没有执行的人工检查，例如真实 Provider、MCP、Webhook、网络、定时时钟或发布冒烟。人工项不得被静默报告为已通过。
 

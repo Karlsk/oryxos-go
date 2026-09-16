@@ -83,7 +83,7 @@ Agent 能调用工具实际操作系统。OryxOS 提供两类 Tool：
 |------|------|------|---------|
 | 零代码 | 最低 | 写 SKILL.md + 复用社区现成 MCP server | 业务方只描述意图，LLM 自己组合调用 |
 | 轻代码 | 中等 | 用任何语言写 MCP server | 接入企业自有系统（ERP、CRM） |
-| 重代码 | 最高 | 用 Go 实现 Tool 接口（struct + 方法，实现 Eino `tool.BaseTool`），编译进二进制 | 深度集成，性能最好 |
+| 重代码 | 最高 | 用 Go 实现 OryxOS `InvokableTool` 接口，编译进二进制 | 深度集成，性能最好 |
 
 **基于这个能力可以做的事：**
 - 给 Agent 接入企业自己的 ERP、CRM、CMDB，让 Agent 真正能干企业的活
@@ -317,7 +317,7 @@ oryxos profile delete <name>    # 删除 Profile
 
 Provider 是 LLM 调用的统一抽象。所有 LLM 调用通过 Provider 接口走，Agent 不感知具体调的是哪家。
 
-核心阶段以 Eino 核心的 `model.ToolCallingChatModel` 作为统一模型接口，具体模型连接器使用 `eino-ext/components/model/*`。OryxOS 在其上提供 Provider 抽象，负责配置加载、模型路由和错误归一化，不重复实现厂商协议。Eino-ext 已提供或可通过 OpenAI 兼容协议接入 DeepSeek、通义、豆包、Anthropic、OpenAI、MiniMax、Kimi、智谱、混元等 Provider；这描述的是后续扩展路径，不代表它们都属于核心阶段交付范围。
+核心阶段以 OryxOS 自有的窄 `ChatModel` 端口作为统一模型接口，运行时的 Message、Tool Definition、Tool Call 和 Usage 均使用 OryxOS 自有类型。Provider 适配层使用 Eino core `model.ToolCallingChatModel` 和 `eino-ext/components/model/*` 实现该端口，负责双向类型转换、配置加载、模型路由和错误归一化。Eino 类型不得暴露到 Runtime、Tool、Handler 或 Scheduler，OryxOS 也不重复实现厂商 HTTP 协议。Eino-ext 已提供或可通过 OpenAI 兼容协议接入 DeepSeek、通义、豆包、Anthropic、OpenAI、MiniMax、Kimi、智谱、混元等 Provider；这描述的是后续扩展路径，不代表它们都属于核心阶段交付范围。
 
 首批跑通 DeepSeek 和 MiniMax。MiniMax 无 Eino-ext 原生 connector，使用官方 OpenAI 兼容 API 接入——选它而非有原生 connector 的模型是刻意安排，专门用来验证 OpenAI 兼容这条适配路径：Function Calling、流式响应，以及多轮工具调用时 assistant 完整响应和 Tool 消息的正确累积，都要在这条路径上跑通。
 
@@ -326,7 +326,7 @@ Provider 是 LLM 调用的统一抽象。所有 LLM 调用通过 Provider 接口
 - 实例级 Provider 声明：`provider 名`、环境变量注入的 `API key`，回答“这个 OryxOS 实例启用哪些明确 Provider”。connector、协议适配和端点策略由对应工厂封装；原生 connector 的官方默认地址不重复配置。
 - Profile Provider 段：`provider 名`、`模型名`、`temperature`，回答“这个 Agent 如何使用已声明的 Provider”。
 
-启动时按 Provider 名找到构造函数，把两层配置合并后为每个合法 Profile 创建独立的 `ToolCallingChatModel` 实例，并以 `Profile.name` 保存。两个 Profile 即使选择同一 Provider，也不得共享可能携带不同模型参数的实例。
+启动时按 Provider 名找到构造函数，把两层配置合并后为每个合法 Profile 创建独立的 OryxOS `ChatModel` 实例，并以 `Profile.name` 保存。两个 Profile 即使选择同一 Provider，也不得共享可能携带不同模型参数的实例。
 
 **核心阶段不做**：fallback 和 hedge racing。Provider 故障时直接报错给 Agent；成本透明只做基础版（每次 LLM 调用记录 token 使用量、Provider、模型落到日志）。
 
@@ -385,7 +385,7 @@ ReAct 循环是 Agent 的核心工作机制，也是 OryxOS 最关键的一段�
 
 ### 5.6 Tool 体系（核心能力四：让 Agent 能干事）
 
-Tool 是 Agent 可以调用的外部能力。Agent 通过 LLM Function Calling 决定何时调哪个 Tool，OryxOS 负责 Tool 的注册、查找、调用、结果回传。内置 Tool 和重代码 Plugin Tool 都基于 Eino 的 `tool.BaseTool` 抽象实现，保证跟 Provider 层一致的调用约定。
+Tool 是 Agent 可以调用的外部能力。Agent 通过 LLM Function Calling 决定何时调哪个 Tool，OryxOS 负责 Tool 的注册、查找、调用、结果回传。内置 Tool、MCP Tool 和重代码 Plugin Tool 都实现 OryxOS 自有的 `InvokableTool` 端口，并向模型暴露 OryxOS `ToolDefinition`；只有 Provider 适配层负责把该定义转换为 Eino Tool schema。
 
 #### 内置 Tool（核心阶段 9 个）
 
@@ -412,7 +412,7 @@ Tool 失败后仅在执行结果明确标记为可重试，且调用具备幂等
 |------|------|--------|------|
 | **方式一**：写 SKILL.md + 复用 MCP server | 零代码 | ⭐⭐⭐ 主推 | 描述意图，LLM 自己组合现成能力 |
 | **方式二**：自己写 MCP server | 轻代码 | ⭐⭐ | 接入企业自有系统，任何语言皆可 |
-| **方式三**：用 Go 实现 Tool 接口（实现 Eino `tool.BaseTool`） | 重代码 | ⭐ | 深度集成，性能最好 |
+| **方式三**：用 Go 实现 OryxOS `InvokableTool` | 重代码 | ⭐ | 深度集成，性能最好 |
 
 > **选择原则**：能用方式一就不用方式二，能用方式二就不用方式三。
 
@@ -830,7 +830,7 @@ OryxOS 核心功能的实施按 **4 周节奏**组织，每周 3 小时，合计
 
 **第一周**（3 小时）：对接 LLM + ReAct 循环
 - `oryxos init` 工作区初始化、Profile YAML 解析
-- Provider 抽象（统一依赖 Eino `model.ToolCallingChatModel`，使用 Eino-ext connector，先跑通 DeepSeek 和 MiniMax）
+- Provider 抽象（Runtime 统一依赖 OryxOS `ChatModel` 端口，Provider 适配层使用 Eino core/Eino-ext connector，先跑通 DeepSeek 和 MiniMax）
 - ReAct 循环（核心循环约数十行 Go，含 LLM 调用、Tool 调用解析、消息累积）
 - 一个基础内置 Tool（HTTP）、CLI Channel
 - Session 管理（内存版，第四周加 SQLite 持久化）
@@ -885,11 +885,11 @@ OryxOS 核心功能的实施按 **4 周节奏**组织，每周 3 小时，合计
 
 - [ ] `oryxos init` 工作区初始化
 - [ ] Profile 配置和管理（支持多 Profile 并存）
-- [ ] Provider 抽象（至少跑通 DeepSeek 和 MiniMax 两个；统一依赖 `model.ToolCallingChatModel`，具体实现来自 Eino-ext）
+- [ ] Provider 抽象（至少跑通 DeepSeek 和 MiniMax 两个；Runtime 统一依赖 OryxOS `ChatModel`，Eino core/Eino-ext 只出现在 Provider 适配层）
 - [ ] ReAct 循环（多轮 Tool 调用、正确累积消息历史、达到最大迭代次数时正确终止）
 - [ ] Memory 长期记忆（save_memory 写入、recall_memory 关键词检索、启动时注入 system prompt）
 - [ ] 内置 Tool（`read_file`、`write_file`、`list_dir`、`shell`、`http_get`、`http_post`、`save_memory`、`recall_memory`、`notify`，共 9 个）
-- [ ] Plugin Tool 接入（方式一零代码 SKILL.md + MCP 跑通；方式三 Go Tool 接口示例跑通）
+- [ ] Plugin Tool 接入（方式一零代码 SKILL.md + MCP 跑通；方式三 OryxOS `InvokableTool` 示例跑通）
 - [ ] MCP Client 集成、CLI Channel
 - [ ] 定时任务 `AgentScheduler`（第三触发源，cron 到点自动触发，跟 CLI/Web Service 复用同一条 `AgentService` 链路）
 - [ ] Web Service 核心 10 个 REST 端点全部跑通

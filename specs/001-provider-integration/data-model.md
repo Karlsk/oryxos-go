@@ -67,7 +67,7 @@ Represented by the registry's model entry rather than a database row.
 
 | Key | Value | Invariant |
 |---|---|---|
-| `profile.name` | `model.ToolCallingChatModel` | One independently constructed instance per valid Profile |
+| `profile.name` | `llm.ChatModel` | One independently constructed OryxOS model adapter per valid Profile |
 
 Factory entries are separately keyed by `provider.name`. Neither map permits silent overwrite.
 

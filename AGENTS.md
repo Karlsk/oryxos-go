@@ -14,7 +14,7 @@ OryxOS 是用 Go 1.26 实现的面向企业场景的 **Agent OS**。它部署在
 |------|------|
 | 语言 / 运行时 | Go 1.26+ |
 | Agent Runtime | 自实现轻量 ReAct Loop |
-| LLM 抽象 | Eino core `model.ToolCallingChatModel` |
+| LLM 抽象 | OryxOS `internal/llm.ChatModel` |
 | Provider connector | Eino-ext；DeepSeek 原生 connector，MiniMax 使用 OpenAI connector |
 | HTTP 服务 | Gin，同步 JSON REST API |
 | 命令行 | Cobra |
@@ -42,6 +42,7 @@ oryxos-go/
 │   ├── profile/             # ProfileLoader、ProfileRegistry
 │   ├── skill/               # SkillLoader
 │   ├── bootstrap/           # BootstrapLoader、Prompt 分段
+│   ├── llm/                 # OryxOS ChatModel 端口与领域类型
 │   ├── provider/            # Provider 工厂、DeepSeek/MiniMax 适配
 │   ├── runtime/             # AgentService、ReActLoop、PromptBuilder
 │   ├── memory/              # MarkdownMemoryStore
@@ -66,11 +67,11 @@ oryxos-go/
 
 ```text
 cmd → app → handler/channel/scheduler → service/runtime
-runtime → Eino core interfaces + domain ports
+runtime → OryxOS domain ports
 provider/tool-mcp/store → concrete external libraries
 ```
 
-- `runtime` 不得导入 Gin、Cobra、GORM 或 Eino-ext。
+- `runtime` 不得导入 Gin、Cobra、GORM、Eino core 或 Eino-ext。
 - `web` 不得直接访问 Provider connector 或 Store 实现。
 - 使用 Go 语义的 Handler、Store、Registry，避免 Java 风格的 Controller、Repository、Lifecycle 层级。
 - 包结构可以随实现演进，但边界变化必须同步更新 `docs/TechnicalSolution.md` 第 11 章和本节，并说明理由；禁止循环依赖。
@@ -95,19 +96,19 @@ provider/tool-mcp/store → concrete external libraries
 
 核心循环保持精简，但不能把控制权交给框架。
 
-### 原则二：Eino core 是运行时边界，Eino-ext 只在工厂层
+### 原则二：OryxOS 自有端口是运行时边界，Eino 只在 Provider 层
 
-运行时最终调用 Eino core 的 `model.ToolCallingChatModel`。Eino-ext 只负责构造厂商 connector，不得成为 Handler、Scheduler、Tool 或业务层的接口。
+运行时最终调用 OryxOS 自有的 `llm.ChatModel`，并使用 OryxOS `Message`、`ToolDefinition`、`ToolCall` 和 `Usage`。Provider 适配层用 Eino core `model.ToolCallingChatModel` 和 Eino-ext connector 实现该端口。Eino core/Eino-ext 不得成为 Handler、Scheduler、Tool 或 Runtime 的接口。
 
 ```text
-ReActLoop → model.ToolCallingChatModel
-ProviderFactory → Eino-ext connector → Provider API
+ReActLoop → llm.ChatModel
+ProviderAdapter → Eino core/Eino-ext connector → Provider API
 ```
 
 - DeepSeek 使用 Eino-ext DeepSeek connector。
 - MiniMax 使用 Eino-ext OpenAI connector，并由 `minimax` 工厂固定配置 MiniMax 官方 OpenAI 兼容 base URL。
 - 不得使用 Eino ADK 自动执行 Tool；Tool 调度只能由 `ReActLoop + ToolExecutor` 完成。
-- 上层不得保存或判断 Eino-ext 具体类型。
+- 只有 `internal/provider` 可导入 Eino core/Eino-ext；上层不得保存或判断 Eino 类型。
 - 核心 Web API 只做同步 JSON；connector 的 Stream 回归不等于交付 SSE。
 
 ### 原则三：Provider 工厂按厂商映射，模型实例按 Profile 隔离
@@ -118,11 +119,11 @@ ProviderFactory → Eino-ext connector → Provider API
 type ModelFactory func(
     ctx context.Context,
     cfg ProviderConfig,
-) (model.ToolCallingChatModel, error)
+) (llm.ChatModel, error)
 
 type ProviderRegistry struct {
-    factories map[string]ModelFactory                // key: provider.name
-    models    map[string]model.ToolCallingChatModel // key: profile.name
+    factories map[string]ModelFactory  // key: provider.name
+    models    map[string]llm.ChatModel // key: profile.name
 }
 ```
 
@@ -177,8 +178,8 @@ CGO_ENABLED=0 go build ./cmd/oryxos
 
 内置 Tool、MCP Tool、编译进二进制的 Go Tool 全部注册到 `ToolRegistry`，统一由 `ToolExecutor` 完成参数校验、Sandbox、执行、重试判定和调用记录。
 
-- Eino `tool.BaseTool` 只提供元数据。
-- 可执行 Tool 必须实现嵌入 `BaseTool` 的 `tool.InvokableTool`，执行方法为 `InvokableRun`。
+- 可执行 Tool 必须实现 OryxOS `InvokableTool`，由 `Info` 提供 `llm.ToolDefinition`，由 `Invoke` 执行原始 JSON arguments。
+- Tool 包不得导入 Eino；Eino Tool schema 转换只在 Provider 适配层发生。
 - OryxOS 用 `OryxTool` 包装运行元数据。
 - Skill、Bootstrap、Memory 是 Prompt 上下文来源，不得包装为 Tool。
 - 工作区不设置悬空的 `tools/` 配置目录。
@@ -395,12 +396,12 @@ CLI / HTTP / Scheduler
       [7] 最近 max_history_turns 轮会话
       [8] 当前用户消息
       [9] 当前 Profile 可用 Tool schemas
-  → ToolCallingChatModel 调 LLM，写 llm_calls
+  → OryxOS ChatModel 调 LLM，写 llm_calls
   → [无 Tool Call] 保存最终响应并返回
   → [有 Tool Call] ToolExecutor 按返回顺序逐个执行
       → 参数 schema 校验
       → Profile Tool 列表与 Sandbox 校验
-      → InvokableRun 或 MCP call
+      → OryxOS InvokableTool.Invoke（内置或 MCP 适配）
       → 写 tool_invocations
       → 追加完整 assistant response + Tool messages
   → 继续循环，最多 max_iterations 次
@@ -422,15 +423,15 @@ Prompt 冲突优先级：
 
 ```go
 type OryxTool struct {
-    Tool       tool.InvokableTool
+    Tool       InvokableTool
     Retryable  bool
     Idempotent bool
     Timeout    time.Duration
 }
 ```
 
-- `tool.BaseTool`：只提供元数据；
-- `tool.InvokableTool`：嵌入 `BaseTool` 并提供 `InvokableRun`；
+- `InvokableTool.Info`：提供 OryxOS `llm.ToolDefinition`；
+- `InvokableTool.Invoke`：执行原始 JSON arguments 并返回文本结果；
 - `ToolRegistry`：注册和按 Profile 过滤 Tool；
 - `ToolExecutor`：参数校验、Sandbox、执行、有限重试、结果回填和调用记录。
 
@@ -465,7 +466,7 @@ Tool 只有在“错误明确可重试”且“调用幂等或带可靠幂等键
 |------|------|------|------|
 | 零代码 | 最低 | ⭐⭐⭐ | 写 SKILL.md + 复用社区 MCP server + Profile 引用 |
 | 轻代码 | 中 | ⭐⭐ | 任意语言写 MCP server，连接定义在 `mcp_servers.yaml` |
-| 重代码 | 高 | ⭐ | Go 实现 Eino `tool.InvokableTool`，编译进二进制 |
+| 重代码 | 高 | ⭐ | Go 实现 OryxOS `InvokableTool`，编译进二进制 |
 
 > 选择原则：能用方式一就不用方式二，能用方式二就不用方式三。
 
@@ -560,7 +561,7 @@ oryxos init
 
 | 能力 | 核心组件 | 验收覆盖 |
 |------|---------|---------|
-| **一：对接 LLM** | `ProviderFactory`、`ProviderRegistry`、`ToolCallingChatModel` | Demo 一和二 |
+| **一：对接 LLM** | `llm.ChatModel`、`ProviderFactory`、`ProviderRegistry`、Eino 适配器 | Demo 一和二 |
 | **二：ReAct 循环** | `AgentService`、`ReActLoop`、`PromptBuilder`、`ToolExecutor` | Demo 一和二 |
 | **三：Memory** | `MarkdownMemoryStore`、`MEMORY.md`、Session | Demo 二体现用户关注偏好 |
 | **四：Plugin Tool** | `ToolRegistry`、Sandbox、官方 MCP Client | Demo 一用内置 Tool；Demo 二验收 SKILL.md + MCP |
@@ -605,11 +606,11 @@ oryxos init
 
 | 陷阱 | 症状 | 修复 |
 |------|------|------|
-| 使用 Eino ADK 自动 Agent/Tool 执行 | ReAct 控制权丢失或 Tool 重复执行 | 只保留 `ToolCallingChatModel`，由 `ReActLoop + ToolExecutor` 执行 |
-| 业务层直接依赖 Eino-ext | connector 类型散落，升级困难 | Eino-ext 只出现在 `internal/provider` 工厂 |
+| 使用 Eino ADK 自动 Agent/Tool 执行 | ReAct 控制权丢失或 Tool 重复执行 | 只在 Provider 适配层使用 Eino connector，由 `ReActLoop + ToolExecutor` 执行 |
+| 业务层直接依赖 Eino | Eino 类型散落，升级或替换困难 | Eino core/Eino-ext 只出现在 `internal/provider` 适配/工厂层 |
 | 模型实例只按 provider.name 缓存 | 同一厂商的不同 Profile 共享实例生命周期和模型绑定 | 工厂按 provider name，实例按 Profile.name |
 | 把凭证同时放进全局配置和 Profile | 出现双份密钥和连接配置漂移 | 全局层只管连接，Profile 只管 Provider/模型/temperature 选择 |
-| 只实现 `tool.BaseTool` | 有 schema 但无法执行 | 实现 `tool.InvokableTool.InvokableRun` |
+| Tool 只实现 `Info` | 有 schema 但无法执行 | 实现完整的 OryxOS `InvokableTool` |
 | 把 Skill 当成 Tool | Skill 被注册或模型看不到业务指令 | Skill 由 `SkillLoader/PromptBuilder` 加载，不进 Registry |
 | 恢复 `agents/<name>/AGENT.md` | 出现第二配置源，与 Profile 冲突 | 只保留 `profiles/*.yaml + skills/**/SKILL.md` |
 | 用 `identity.prompt` 承载完整业务任务 | 身份和业务定义混在一起 | 身份放 identity，任务放 Skill |
@@ -631,8 +632,8 @@ oryxos init
 - **需求文档是唯一需求事实**：实现范围、数字和验收口径先查 `docs/DemandAnalysis.md`。
 - **底座优先于业务 Agent**：核心交付是让多个 Agent 可靠运行的环境，不是单个 Demo。
 - **Agent = Profile + Skill**：Profile 决定怎么跑，Skill 决定做什么。
-- **自实现核心，复用管道**：ReAct 自己实现；模型与 Tool 抽象复用 Eino，MCP 协议复用官方 Go SDK。
-- **依赖倒置**：Runtime 依赖 Eino core 和内部端口，外部 connector/数据库/HTTP 框架在边缘。
+- **自实现核心，复用管道**：ReAct、模型端口和 Tool 端口由 OryxOS 自己实现；厂商协议复用 Eino connector，MCP 协议复用官方 Go SDK。
+- **依赖倒置**：Runtime 只依赖 OryxOS 内部端口，Eino connector/数据库/HTTP 框架在边缘。
 - **开放标准**：Tool 对接 MCP，Skill 兼容 agentskills.io 的完整支持放扩展阶段。
 - **状态外置**：实例级 Provider 声明与 Profile/Skill/Bootstrap/Memory 在文件系统，Session 和调用记录在 SQLite。
 - **安全是地基**：白名单、超时、最小权限、凭证环境变量和调用记录从第一天存在。
