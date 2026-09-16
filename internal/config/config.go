@@ -7,11 +7,18 @@ import "time"
 type ServerConfig struct {
 	ListenAddress     string
 	LogFormat         LogFormat
+	Providers         []ProviderDefinition
 	ReadHeaderTimeout time.Duration
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
 	ShutdownTimeout   time.Duration
+}
+
+// ProviderDefinition declares one explicitly supported Provider and its credential.
+type ProviderDefinition struct {
+	Name   string
+	APIKey string
 }
 
 // LogFormat selects the application logger's output mode.
@@ -24,10 +31,16 @@ const (
 )
 
 type rawServerConfig struct {
-	ListenAddress   *string  `yaml:"listen_address"`
-	LogFormat       *string  `yaml:"log_format"`
-	HTTP            *rawHTTP `yaml:"http"`
-	ShutdownTimeout *string  `yaml:"shutdown_timeout"`
+	ListenAddress   *string                 `yaml:"listen_address"`
+	LogFormat       *string                 `yaml:"log_format"`
+	Providers       []rawProviderDefinition `yaml:"providers"`
+	HTTP            *rawHTTP                `yaml:"http"`
+	ShutdownTimeout *string                 `yaml:"shutdown_timeout"`
+}
+
+type rawProviderDefinition struct {
+	Name   *string `yaml:"name"`
+	APIKey *string `yaml:"api_key"`
 }
 
 type rawHTTP struct {

@@ -41,27 +41,36 @@ func TestArchitectureForbiddenRuntimeImports(t *testing.T) {
 func TestArchitectureDependencyFamiliesAtEdges(t *testing.T) {
 	allowed := []struct {
 		prefix string
-		edge   string
+		edges  []string
 	}{
-		{"github.com/gin-gonic/gin", "internal/web"},
-		{"github.com/spf13/cobra", "cmd/oryxos"},
-		{"gopkg.in/yaml.v3", "internal/config"},
-		{"github.com/robfig/cron/v3", "internal/scheduler"},
-		{"github.com/cloudwego/eino-ext", "internal/provider"},
-		{"github.com/modelcontextprotocol/go-sdk/mcp", "internal/tool/mcp"},
-		{"gorm.io/gorm", "internal/store"},
-		{"github.com/glebarez/sqlite", "internal/store"},
-		{"modernc.org/sqlite", "internal/store"},
+		{"github.com/gin-gonic/gin", []string{"internal/web"}},
+		{"github.com/spf13/cobra", []string{"cmd/oryxos"}},
+		{"gopkg.in/yaml.v3", []string{"internal/config", "internal/profile"}},
+		{"github.com/robfig/cron/v3", []string{"internal/scheduler"}},
+		{"github.com/cloudwego/eino-ext", []string{"internal/provider"}},
+		{"github.com/modelcontextprotocol/go-sdk/mcp", []string{"internal/tool/mcp"}},
+		{"gorm.io/gorm", []string{"internal/store"}},
+		{"github.com/glebarez/sqlite", []string{"internal/store"}},
+		{"modernc.org/sqlite", []string{"internal/store"}},
 	}
 	for packagePath, paths := range repositoryImports(t) {
 		for _, imported := range paths {
 			for _, rule := range allowed {
-				if hasImportPrefix(imported, rule.prefix) && packagePath != rule.edge && !strings.HasPrefix(packagePath, rule.edge+"/") {
-					t.Fatalf("package %s imports %s outside permitted edge %s", packagePath, imported, rule.edge)
+				if hasImportPrefix(imported, rule.prefix) && !packageMatchesAnyEdge(packagePath, rule.edges) {
+					t.Fatalf("package %s imports %s outside permitted edges %v", packagePath, imported, rule.edges)
 				}
 			}
 		}
 	}
+}
+
+func packageMatchesAnyEdge(packagePath string, edges []string) bool {
+	for _, edge := range edges {
+		if packagePath == edge || strings.HasPrefix(packagePath, edge+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func TestArchitectureNoForbiddenRuntimeImports(t *testing.T) {

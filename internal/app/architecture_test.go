@@ -11,10 +11,8 @@ var placeholderCases = []struct {
 	path string
 	want string
 }{
-	{"internal/profile/doc.go", "// Package profile contains Profile loading and runtime registration.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Profile behavior is implemented by a later feature specification.\npackage profile\n"},
 	{"internal/skill/doc.go", "// Package skill contains loading of Profile-referenced SKILL.md content.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Skill behavior is implemented by a later feature specification.\npackage skill\n"},
 	{"internal/bootstrap/doc.go", "// Package bootstrap contains loading of Bootstrap prompt-context files.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Bootstrap behavior is implemented by a later feature specification.\npackage bootstrap\n"},
-	{"internal/provider/doc.go", "// Package provider contains model-provider factories and adapters.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Provider behavior is implemented by a later feature specification.\npackage provider\n"},
 	{"internal/runtime/doc.go", "// Package runtime contains the OryxOS Agent runtime and ReAct loop.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Runtime behavior is implemented by a later feature specification.\npackage runtime\n"},
 	{"internal/memory/doc.go", "// Package memory contains the Markdown-backed long-term memory store.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Memory behavior is implemented by a later feature specification.\npackage memory\n"},
 	{"internal/session/doc.go", "// Package session contains session resolution and persistence coordination.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Session behavior is implemented by a later feature specification.\npackage session\n"},
@@ -24,7 +22,6 @@ var placeholderCases = []struct {
 	{"internal/sandbox/doc.go", "// Package sandbox contains application-level file, command, and URL validation.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Sandbox behavior is implemented by a later feature specification.\npackage sandbox\n"},
 	{"internal/scheduler/doc.go", "// Package scheduler contains Profile schedule triggering for AgentService.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Scheduler behavior is implemented by a later feature specification.\npackage scheduler\n"},
 	{"internal/channel/cli/doc.go", "// Package cli contains the core-phase command-line message Channel.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// CLI Channel behavior is implemented by a later feature specification.\npackage cli\n"},
-	{"internal/store/doc.go", "// Package store contains GORM persistence, migrations, and core call-record stores.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Store behavior is implemented by a later feature specification.\npackage store\n"},
 }
 
 func repositoryRoot(t *testing.T) string {

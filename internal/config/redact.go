@@ -12,6 +12,7 @@ var (
 	sensitiveKeyValuePattern = regexp.MustCompile(`(?i)(?:["']?[a-z0-9_-]*(?:api[_-]?key|authorization|mcp[_-]?(?:auth|token)|password|secret|token|webhook[_-]?url|apikey|credential|mcp_auth|webhook)[a-z0-9_-]*["']?\s*(?:=|:)\s*)(?:[^\s,;]+)`) //nolint:lll
 	credentialURLPattern     = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@`)
 	authorizationPattern     = regexp.MustCompile(`(?i)\b(?:bearer|basic)\s+[a-z0-9._~+/=-]+`)
+	providerKeyPhrasePattern = regexp.MustCompile(`(?i)\bapi(?:[\s_-]?)key\b\s+[^\s,;]+`)
 	urlPattern               = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"']+`)
 )
 
@@ -40,7 +41,7 @@ func IsSensitiveKey(path []string, key string) bool {
 
 // SanitizeErrorString removes a complete sensitive value from a caller-visible error string.
 func SanitizeErrorString(text string) string {
-	if sensitiveKeyValuePattern.MatchString(text) || credentialURLPattern.MatchString(text) || authorizationPattern.MatchString(text) || containsCredentialURL(text) {
+	if sensitiveKeyValuePattern.MatchString(text) || credentialURLPattern.MatchString(text) || authorizationPattern.MatchString(text) || providerKeyPhrasePattern.MatchString(text) || containsCredentialURL(text) {
 		return redactedValue
 	}
 	return text

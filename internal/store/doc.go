@@ -1,5 +1,3 @@
-// Package store contains GORM persistence, migrations, and core call-record stores.
-//
-// The oryxos-init Skill creates this package as a compile-safe placeholder.
-// Store behavior is implemented by a later feature specification.
+// Package store contains pure-Go SQLite setup, hand-maintained migrations, and
+// context-aware persistence for core call records.
 package store

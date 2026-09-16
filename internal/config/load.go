@@ -140,6 +140,25 @@ func validateYAMLShape(document *yaml.Node) error {
 					}
 				}
 			}
+		case "providers":
+			if value.Kind != yaml.SequenceNode {
+				return newConfigError("providers", "must be a sequence", nil)
+			}
+			for providerIndex, provider := range value.Content {
+				path := fmt.Sprintf("providers.%d", providerIndex)
+				if provider.Kind != yaml.MappingNode {
+					return newConfigError(path, "must be a mapping", nil)
+				}
+				for fieldIndex := 0; fieldIndex+1 < len(provider.Content); fieldIndex += 2 {
+					field := provider.Content[fieldIndex]
+					fieldValue := provider.Content[fieldIndex+1]
+					if field.Value == "name" || field.Value == "api_key" {
+						if err := validateScalarString(fieldValue, path+"."+field.Value); err != nil {
+							return err
+						}
+					}
+				}
+			}
 		}
 	}
 	return nil
@@ -325,16 +344,49 @@ func validateServerConfig(raw rawServerConfig) (ServerConfig, error) {
 	if err != nil {
 		return ServerConfig{}, err
 	}
+	providers, err := validateProviders(raw.Providers)
+	if err != nil {
+		return ServerConfig{}, err
+	}
 
 	return ServerConfig{
 		ListenAddress:     listenAddress,
 		LogFormat:         LogFormat(logFormat),
+		Providers:         providers,
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
 		ShutdownTimeout:   shutdownTimeout,
 	}, nil
+}
+
+func validateProviders(rawProviders []rawProviderDefinition) ([]ProviderDefinition, error) {
+	if len(rawProviders) == 0 {
+		return nil, nil
+	}
+	providers := make([]ProviderDefinition, 0, len(rawProviders))
+	seen := make(map[string]struct{}, len(rawProviders))
+	for index, rawProvider := range rawProviders {
+		path := fmt.Sprintf("providers.%d", index)
+		name := strings.TrimSpace(stringOrDefault(rawProvider.Name, ""))
+		if name == "" {
+			return nil, newConfigError(path+".name", "must not be empty", nil)
+		}
+		if name != "deepseek" && name != "minimax" {
+			return nil, newConfigError(path+".name", fmt.Sprintf("unsupported provider %q", name), nil)
+		}
+		if _, exists := seen[name]; exists {
+			return nil, newConfigError(path+".name", fmt.Sprintf("duplicate provider %q", name), nil)
+		}
+		apiKey := stringOrDefault(rawProvider.APIKey, "")
+		if strings.TrimSpace(apiKey) == "" {
+			return nil, newConfigError(path+".api_key", "must not be empty", nil)
+		}
+		seen[name] = struct{}{}
+		providers = append(providers, ProviderDefinition{Name: name, APIKey: apiKey})
+	}
+	return providers, nil
 }
 
 func rawHTTPValue(http *rawHTTP, field func(*rawHTTP) *string) *string {

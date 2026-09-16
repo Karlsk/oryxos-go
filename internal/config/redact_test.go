@@ -46,6 +46,8 @@ func TestSanitizeErrorString(t *testing.T) {
 		want string
 	}{
 		{"sensitive_key_value", "api_key=top-secret", "[REDACTED]"},
+		{"provider_api_key_phrase", "provider rejected api key sk-provider-secret", "[REDACTED]"},
+		{"authorization_header", "request failed: Authorization: Bearer sk-provider-secret", "[REDACTED]"},
 		{"sensitive_colon_value", "password: top-secret", "[REDACTED]"},
 		{"credential_url", "request to https://user:top-secret@example.invalid failed", "[REDACTED]"},
 		{"bearer_credential", "upstream rejected Bearer top-secret", "[REDACTED]"},

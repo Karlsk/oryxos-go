@@ -30,8 +30,6 @@ identity:
 provider:
   name: deepseek
   model: deepseek-chat
-  api_key: ${LLM_API_KEY}
-  base_url: ""
   temperature: 0.7
 
 tools:

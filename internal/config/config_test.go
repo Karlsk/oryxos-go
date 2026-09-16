@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func requireNoError(t *testing.T, err error) {
 func TestLoadServerYAMLDefaults(t *testing.T) {
 	got, err := LoadServerYAML(nil, unsetLookup)
 	requireNoError(t, err)
-	if got != defaultServerConfig() {
+	if !reflect.DeepEqual(got, defaultServerConfig()) {
 		t.Fatalf("LoadServerYAML() = %#v, want %#v", got, defaultServerConfig())
 	}
 	if got.ReadHeaderTimeout == 0 || got.ReadTimeout == 0 || got.WriteTimeout == 0 || got.IdleTimeout == 0 || got.ShutdownTimeout == 0 {
@@ -43,8 +44,70 @@ func TestLoadServerYAMLPartialDefaults(t *testing.T) {
 	requireNoError(t, err)
 	want := defaultServerConfig()
 	want.ListenAddress = "127.0.0.1:9090"
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("LoadServerYAML() = %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadServerYAMLProviders(t *testing.T) {
+	input := []byte("providers:\n  - name: deepseek\n    api_key: ${DEEPSEEK_API_KEY}\n  - name: minimax\n    api_key: ${MINIMAX_API_KEY}\n")
+	values := map[string]string{
+		"DEEPSEEK_API_KEY": "deepseek-secret",
+		"MINIMAX_API_KEY":  "minimax-secret",
+	}
+	got, err := LoadServerYAML(input, func(name string) (string, bool) {
+		value, ok := values[name]
+		return value, ok
+	})
+	requireNoError(t, err)
+	want := []ProviderDefinition{
+		{Name: "deepseek", APIKey: "deepseek-secret"},
+		{Name: "minimax", APIKey: "minimax-secret"},
+	}
+	if !reflect.DeepEqual(got.Providers, want) {
+		t.Fatalf("Providers = %#v, want %#v", got.Providers, want)
+	}
+}
+
+func TestLoadServerYAMLRejectsInvalidProviders(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"duplicate", "providers:\n  - name: deepseek\n    api_key: one\n  - name: deepseek\n    api_key: two\n", "duplicate provider"},
+		{"unsupported", "providers:\n  - name: openai\n    api_key: secret\n", "unsupported provider"},
+		{"missing_name", "providers:\n  - api_key: secret\n", "providers.0.name"},
+		{"missing_key", "providers:\n  - name: minimax\n", "providers.0.api_key"},
+		{"blank_key", "providers:\n  - name: minimax\n    api_key: '  '\n", "providers.0.api_key"},
+		{"base_url", "providers:\n  - name: minimax\n    api_key: secret\n    base_url: https://example.invalid/v1\n", "base_url"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadServerYAML([]byte(tc.yaml), unsetLookup)
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), tc.want) {
+				t.Fatalf("LoadServerYAML() error = %v, want text %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "https://example.invalid") {
+				t.Fatalf("LoadServerYAML() leaked input: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadServerYAMLProviderMissingEnvironmentIsSanitized(t *testing.T) {
+	const secret = "expanded-provider-secret"
+	_, err := LoadServerYAML([]byte("providers:\n  - name: minimax\n    api_key: ${MINIMAX_API_KEY}\n  - name: deepseek\n    api_key: ${MISSING_API_KEY}\n"), func(name string) (string, bool) {
+		if name == "MINIMAX_API_KEY" {
+			return secret, true
+		}
+		return "", false
+	})
+	if err == nil {
+		t.Fatal("LoadServerYAML() error = nil, want missing environment error")
+	}
+	if !strings.Contains(err.Error(), "MISSING_API_KEY") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("LoadServerYAML() error = %q, want variable name without expanded secret", err)
 	}
 }
 
