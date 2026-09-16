@@ -34,3 +34,14 @@
 
 - Validation passed after synchronizing the factory-owned endpoint decision on 2026-09-15.
 - Domain terms such as Profile, Provider, Session, Tool descriptions, and model-call records describe required behavior rather than implementation structure.
+
+## Implementation scope audit (2026-09-16)
+
+- [x] Exactly DeepSeek and MiniMax factories are registered; MiniMax alone uses the OpenAI-compatible connector.
+- [x] Process Provider declarations accept only `name/api_key`; Profile Provider choices accept only `name/model/temperature`.
+- [x] DeepSeek uses its native connector default endpoint; MiniMax owns a fixed endpoint inside its factory; neither endpoint is user-configurable.
+- [x] Model instances are indexed by Profile name and full reloads atomically rebuild the isolated snapshot.
+- [x] Tool metadata is bound without Tool execution; Eino ADK, fallback, retries, streaming, and ReAct iteration are absent.
+- [x] Exactly one hand-maintained `llm_calls` migration was added; `AutoMigrate` and production `mattn/go-sqlite3` imports are absent.
+- [x] The generated workspace remains five directories and six initial files, with no credential fields in `profiles/default.yaml`.
+- [x] `go test ./...`, `go vet ./...`, and the no-CGO build all pass; live tests are opt-in and were safely skipped without credentials.

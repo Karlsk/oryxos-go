@@ -25,6 +25,19 @@ gorm.io/gorm v1.31.2
 github.com/glebarez/sqlite v1.11.0
 ```
 
+Resolved on 2026-09-16 with the fixed direct versions above. The production
+dependency closure for `internal/store` and `internal/provider`, inspected with
+`CGO_ENABLED=0 go list -deps`, contains `modernc.org/sqlite v1.23.1` and does
+not contain `github.com/mattn/go-sqlite3` or `github.com/cloudwego/eino/adk`.
+There are likewise no source imports of either forbidden package.
+
+`go mod graph` does show `mattn/go-sqlite3` in upstream modules' own test
+requirements (`gorm.io/gorm` and `modernc.org/sqlite`). That metadata is not in
+the OryxOS production package closure and does not affect the successful
+`CGO_ENABLED=0` build. This distinction avoids claiming that an upstream module
+has no test dependency while still enforcing the project's pure-Go runtime
+boundary.
+
 ## 2. Run the deterministic harness
 
 ```bash
@@ -81,6 +94,10 @@ The integration harness must run one DeepSeek request and one MiniMax OpenAI-com
 
 If credentials are absent, the test must skip with a clear message. If credentials are present and a Provider call fails, the test must fail and the attempted call must still leave a sanitized `success=false` audit row.
 
+Verification on 2026-09-16 compiled the integration harness and deliberately
+removed both credential variables. The DeepSeek and MiniMax subtests skipped
+with their respective missing-variable messages; no live network call was made.
+
 ## 5. Inspect the schema
 
 The integration test database should report only the lesson's `llm_calls` table plus SQLite's own internal objects at this stage. Confirm required columns using:
@@ -91,3 +108,14 @@ PRAGMA index_list(llm_calls);
 ```
 
 The schema must originate from `internal/store/migrations/001_llm_calls.sql` (kept semantically identical to `contracts/llm_calls.sql`), never from `AutoMigrate`.
+
+## 6. Recorded deterministic verification
+
+Run on 2026-09-16 after `go mod tidy` and `gofmt`:
+
+```text
+go test ./...                         PASS
+go vet ./...                          PASS
+CGO_ENABLED=0 go test ./internal/store ./internal/provider  PASS
+CGO_ENABLED=0 go build ./cmd/oryxos  PASS
+```

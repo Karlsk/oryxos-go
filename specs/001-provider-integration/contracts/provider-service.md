@@ -22,7 +22,7 @@ The concrete Eino-ext connector imports are confined to factory construction in 
 ## Factory registration
 
 ```go
-const miniMaxOpenAIBaseURL = "https://api.minimax.io/v1"
+const miniMaxOpenAIBaseURL = "https://api.minimax.cn/v1"
 
 factories["deepseek"] = func(ctx context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
 	return deepseek.NewChatModel(ctx, &deepseek.ChatModelConfig{

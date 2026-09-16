@@ -38,7 +38,7 @@ identity:
 
 provider:
   name: minimax
-  model: MiniMax-M2.7
+  model: MiniMax-M3
   temperature: 0.7
 
 tools: []

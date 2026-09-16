@@ -23,8 +23,8 @@ description: "Implementation tasks for lesson 16 LLM Provider integration"
 
 **Purpose**: Lock the user-selected stable dependency set without changing Provider behavior yet.
 
-- [ ] T001 Add direct pins for Eino `v0.9.19`, Eino-ext DeepSeek `v0.1.7`, Eino-ext OpenAI `v0.1.13`, GORM `v1.31.2`, and `glebarez/sqlite v1.11.0`, then run `go mod tidy` and confirm the selected modules in `go.mod` and `go.sum`
-- [ ] T002 Record the resolved module graph and verify it contains `modernc.org/sqlite` but no `mattn/go-sqlite3` or production import of `github.com/cloudwego/eino/adk` in `specs/001-provider-integration/quickstart.md`
+- [x] T001 Add direct pins for Eino `v0.9.19`, Eino-ext DeepSeek `v0.1.7`, Eino-ext OpenAI `v0.1.13`, GORM `v1.31.2`, and `glebarez/sqlite v1.11.0`, then run `go mod tidy` and confirm the selected modules in `go.mod` and `go.sum`
+- [x] T002 Record the resolved production dependency closure and verify it contains `modernc.org/sqlite` but no production load/import of `mattn/go-sqlite3` or `github.com/cloudwego/eino/adk`, documenting upstream test-only module metadata separately, in `specs/001-provider-integration/quickstart.md`
 
 ---
 
@@ -34,9 +34,9 @@ description: "Implementation tasks for lesson 16 LLM Provider integration"
 
 **⚠️ CRITICAL**: User story work starts only after this phase passes.
 
-- [ ] T003 [P] Add failing redaction tests for Provider API keys, authorization material, and secret-bearing URLs in `internal/config/redact_test.go`
-- [ ] T004 [P] Add reusable fake `model.ToolCallingChatModel`, factory capture, Tool metadata source, call recorder, and deterministic clock helpers in `internal/provider/provider_test.go`
-- [ ] T005 Make the Provider redaction cases pass without leaking matched values in `internal/config/redact.go`
+- [x] T003 [P] Add failing redaction tests for Provider API keys, authorization material, and secret-bearing URLs in `internal/config/redact_test.go`
+- [x] T004 [P] Add reusable fake `model.ToolCallingChatModel`, factory capture, Tool metadata source, call recorder, and deterministic clock helpers in `internal/provider/provider_test.go`
+- [x] T005 Make the Provider redaction cases pass without leaking matched values in `internal/config/redact.go`
 
 **Checkpoint**: Provider errors and tests share safe deterministic boundaries.
 
@@ -52,16 +52,16 @@ description: "Implementation tasks for lesson 16 LLM Provider integration"
 
 > **Write these tests first and confirm the intended failures before production implementation.**
 
-- [ ] T006 [P] [US1] Add failing routing tests for DeepSeek versus MiniMax, DeepSeek native-default/MiniMax fixed-endpoint construction, missing Provider/model bindings, duplicate registration, and two same-vendor Profiles with isolated construction settings in `internal/provider/provider_service_test.go`
-- [ ] T007 [P] [US1] Add failing tests for ordered Tool metadata translation, unknown Tool references, `WithTools` binding, response Tool-call ID preservation, and zero Tool executions in `internal/provider/tool_schema_adapter_test.go`
+- [x] T006 [P] [US1] Add failing routing tests for DeepSeek versus MiniMax, DeepSeek native-default/MiniMax fixed-endpoint construction, missing Provider/model bindings, duplicate registration, and two same-vendor Profiles with isolated construction settings in `internal/provider/provider_service_test.go`
+- [x] T007 [P] [US1] Add failing tests for ordered Tool metadata translation, unknown Tool references, `WithTools` binding, response Tool-call ID preservation, and zero Tool executions in `internal/provider/tool_schema_adapter_test.go`
 
 ### Implementation for User Story 1
 
-- [ ] T008 [US1] Define the complete lesson-16 `Profile` structure and credential-free `ProfileProviderConfig` with Go/YAML field mappings in `internal/profile/profile.go`
-- [ ] T009 [US1] Define endpoint-free merged `ProviderConfig`, a DeepSeek factory using the native connector default, a MiniMax/OpenAI factory with a fixed official endpoint, factory-by-Provider/model-by-Profile registry behavior, duplicate rejection, and Profile binding in `internal/provider/config.go`, `internal/provider/registry.go`, and `internal/provider/factory.go`
-- [ ] T010 [P] [US1] Implement the metadata-only `ToolSchemaAdapter` and ordered `ToolInfoSource` seam without importing or executing concrete Tools in `internal/provider/tool_schema_adapter.go`
-- [ ] T011 [US1] Implement synchronous `ProviderService.Chat` lookup, optional immutable `WithTools` binding, one `Generate` call, context propagation, and unchanged assistant response return in `internal/provider/service.go`
-- [ ] T012 [US1] Run the User Story 1 tests and package dependency checks, fixing only routing/schema issues in `internal/provider/provider_service_test.go` and `internal/provider/tool_schema_adapter_test.go`
+- [x] T008 [US1] Define the complete lesson-16 `Profile` structure and credential-free `ProfileProviderConfig` with Go/YAML field mappings in `internal/profile/profile.go`
+- [x] T009 [US1] Define endpoint-free merged `ProviderConfig`, a DeepSeek factory using the native connector default, a MiniMax/OpenAI factory with a fixed official endpoint, factory-by-Provider/model-by-Profile registry behavior, duplicate rejection, and Profile binding in `internal/provider/config.go`, `internal/provider/registry.go`, and `internal/provider/factory.go`
+- [x] T010 [P] [US1] Implement the metadata-only `ToolSchemaAdapter` and ordered `ToolInfoSource` seam without importing or executing concrete Tools in `internal/provider/tool_schema_adapter.go`
+- [x] T011 [US1] Implement synchronous `ProviderService.Chat` lookup, optional immutable `WithTools` binding, one `Generate` call, context propagation, and unchanged assistant response return in `internal/provider/service.go`
+- [x] T012 [US1] Run the User Story 1 tests and package dependency checks, fixing only routing/schema issues in `internal/provider/provider_service_test.go` and `internal/provider/tool_schema_adapter_test.go`
 
 **Checkpoint**: Programmatically supplied Profiles route and isolate both Providers; schema binding cannot execute a Tool.
 
@@ -77,17 +77,17 @@ description: "Implementation tasks for lesson 16 LLM Provider integration"
 
 > **Write these tests first and confirm the intended failures before production implementation.**
 
-- [ ] T013 [P] [US2] Add failing strict-loader tests for Provider environment expansion, duplicate/unsupported names, missing credentials, rejection of user-supplied `base_url` and other unknown fields, and sanitized fatal errors in `internal/config/config_test.go`
-- [ ] T014 [P] [US2] Add failing tests for full Profile YAML parsing, defaults, non-finite temperature rejection, unknown/legacy credential fields, missing or undeclared Providers, malformed-file isolation, lexical duplicate handling, and configuration-only reload switches in `internal/profile/profile_loader_test.go`
-- [ ] T015 [P] [US2] Add a failing regression assertion that the generated default Profile has only `name`, `model`, and `temperature` under `provider` while the workspace remains five directories and six files in `cmd/oryxos/workspace_test.go`
+- [x] T013 [P] [US2] Add failing strict-loader tests for Provider environment expansion, duplicate/unsupported names, missing credentials, rejection of user-supplied `base_url` and other unknown fields, and sanitized fatal errors in `internal/config/config_test.go`
+- [x] T014 [P] [US2] Add failing tests for full Profile YAML parsing, defaults, non-finite temperature rejection, unknown/legacy credential fields, missing or undeclared Providers, malformed-file isolation, lexical duplicate handling, and configuration-only reload switches in `internal/profile/profile_loader_test.go`
+- [x] T015 [P] [US2] Add a failing regression assertion that the generated default Profile has only `name`, `model`, and `temperature` under `provider` while the workspace remains five directories and six files in `cmd/oryxos/workspace_test.go`
 
 ### Implementation for User Story 2
 
-- [ ] T016 [P] [US2] Extend process `ServerConfig` and its strict YAML shape/validation with `name/api_key`-only, redacted `ProviderDefinition` loading for exactly DeepSeek and MiniMax in `internal/config/config.go` and `internal/config/load.go`
-- [ ] T017 [US2] Implement lexical per-file `ProfileLoader` isolation diagnostics and immutable startup `ProfileRegistry` lookup without runtime `Register` in `internal/profile/loader.go` and `internal/profile/registry.go`
-- [ ] T018 [P] [US2] Remove `api_key` and `base_url` from the idempotently generated default Profile without adding a workspace artifact in `cmd/oryxos/workspace.go`
-- [ ] T019 [US2] Integrate loaded Provider declarations with valid Profiles so each reload rebuilds bindings from current configuration and bad Profiles cannot block valid ones in `internal/provider/registry.go`
-- [ ] T020 [US2] Run the User Story 2 configuration/Profile/workspace tests and verify all error output remains sanitized in `internal/config/config_test.go`, `internal/profile/profile_loader_test.go`, and `cmd/oryxos/workspace_test.go`
+- [x] T016 [P] [US2] Extend process `ServerConfig` and its strict YAML shape/validation with `name/api_key`-only, redacted `ProviderDefinition` loading for exactly DeepSeek and MiniMax in `internal/config/config.go` and `internal/config/load.go`
+- [x] T017 [US2] Implement lexical per-file `ProfileLoader` isolation diagnostics and immutable startup `ProfileRegistry` lookup without runtime `Register` in `internal/profile/loader.go` and `internal/profile/registry.go`
+- [x] T018 [P] [US2] Remove `api_key` and `base_url` from the idempotently generated default Profile without adding a workspace artifact in `cmd/oryxos/workspace.go`
+- [x] T019 [US2] Integrate loaded Provider declarations with valid Profiles so each reload rebuilds bindings from current configuration and bad Profiles cannot block valid ones in `internal/provider/registry.go`
+- [x] T020 [US2] Run the User Story 2 configuration/Profile/workspace tests and verify all error output remains sanitized in `internal/config/config_test.go`, `internal/profile/profile_loader_test.go`, and `cmd/oryxos/workspace_test.go`
 
 **Checkpoint**: Operators can change declared Provider/model choices and restart the loading boundary without code changes or credential-bearing Profiles.
 
@@ -103,15 +103,15 @@ description: "Implementation tasks for lesson 16 LLM Provider integration"
 
 > **Write these tests first and confirm the intended failures before production implementation.**
 
-- [ ] T021 [P] [US3] Add failing migration/repository tests that execute the hand SQL, inspect required columns/index, round-trip success/failure records, preserve nullable errors, and reject invalid required fields in `internal/store/llm_call_repository_test.go`
-- [ ] T022 [P] [US3] Extend the failing Provider service tests with success audit, failure-audit-before-return, unavailable-usage zeros, duration, sanitization, insert failure, and combined connector/persistence failure cases in `internal/provider/provider_service_test.go`
+- [x] T021 [P] [US3] Add failing migration/repository tests that execute the hand SQL, inspect required columns/index, round-trip success/failure records, preserve nullable errors, and reject invalid required fields in `internal/store/llm_call_repository_test.go`
+- [x] T022 [P] [US3] Extend the failing Provider service tests with success audit, failure-audit-before-return, unavailable-usage zeros, duration, sanitization, insert failure, and combined connector/persistence failure cases in `internal/provider/provider_service_test.go`
 
 ### Implementation for User Story 3
 
-- [ ] T023 [P] [US3] Add the idempotent `llm_calls` table/index SQL and pure-Go SQLite opener/migration executor with WAL and `busy_timeout`, never `AutoMigrate`, in `internal/store/migrations/001_llm_calls.sql` and `internal/store/sqlite.go`
-- [ ] T024 [US3] Implement the `LlmCall` GORM mapping and context-aware `LlmCallRepository.Create` validation/insert boundary in `internal/store/llm_call.go` and `internal/store/llm_call_repository.go`
-- [ ] T025 [US3] Complete `ProviderService.Chat` timing, token extraction, exactly-one audit insert attempt, sanitized error ordering, and audit-before-return behavior in `internal/provider/service.go`
-- [ ] T026 [US3] Run the User Story 3 repository and Provider tests, including `CGO_ENABLED=0` package compilation, fixing only audit/storage behavior in `internal/store/llm_call_repository_test.go` and `internal/provider/provider_service_test.go`
+- [x] T023 [P] [US3] Add the idempotent `llm_calls` table/index SQL and pure-Go SQLite opener/migration executor with WAL and `busy_timeout`, never `AutoMigrate`, in `internal/store/migrations/001_llm_calls.sql` and `internal/store/sqlite.go`
+- [x] T024 [US3] Implement the `LlmCall` GORM mapping and context-aware `LlmCallRepository.Create` validation/insert boundary in `internal/store/llm_call.go` and `internal/store/llm_call_repository.go`
+- [x] T025 [US3] Complete `ProviderService.Chat` timing, token extraction, exactly-one audit insert attempt, sanitized error ordering, and audit-before-return behavior in `internal/provider/service.go`
+- [x] T026 [US3] Run the User Story 3 repository and Provider tests, including `CGO_ENABLED=0` package compilation, fixing only audit/storage behavior in `internal/store/llm_call_repository_test.go` and `internal/provider/provider_service_test.go`
 
 **Checkpoint**: Successful and failed model attempts are durably queryable and persistence failures are explicit.
 
@@ -121,10 +121,10 @@ description: "Implementation tasks for lesson 16 LLM Provider integration"
 
 **Purpose**: Finish the lesson harness, synchronize precise APIs, and enforce repository-wide gates.
 
-- [ ] T027 [P] Add `//go:build integration` DeepSeek and MiniMax OpenAI-compatible smoke subtests with environment-only credentials, non-empty responses, Tool-call preservation, and success/failure audit assertions in `internal/provider/provider_smoke_test.go`
-- [ ] T028 [P] Reconcile implemented names, locked versions, `ChatModelConfig` fields, DeepSeek native-default/MiniMax fixed-endpoint behavior, and migration path across `docs/TechnicalSolution.md`, `docs/require/第16节：Agent Provider 原理解析、实现与代码讲解.md`, and `specs/001-provider-integration/quickstart.md`
-- [ ] T029 Run `gofmt` on every changed Go file, then run `go test ./...`, `go vet ./...`, and `CGO_ENABLED=0 go build ./cmd/oryxos`, recording any environment-only live-smoke skip in `specs/001-provider-integration/quickstart.md`
-- [ ] T030 Audit the final diff for exactly two Providers, one model per Profile, `name/api_key`-only process Provider declarations, no user-configurable Provider endpoint, no credential-bearing Profile fields, no Eino ADK/automatic Tool execution, no fallback/retry, no `AutoMigrate`, no `mattn/go-sqlite3`, and no extra core table or workspace artifact in `specs/001-provider-integration/checklists/requirements.md`
+- [x] T027 [P] Add `//go:build integration` DeepSeek and MiniMax OpenAI-compatible smoke subtests with environment-only credentials, non-empty responses, Tool-call preservation, and success/failure audit assertions in `internal/provider/provider_smoke_test.go`
+- [x] T028 [P] Reconcile implemented names, locked versions, `ChatModelConfig` fields, DeepSeek native-default/MiniMax fixed-endpoint behavior, and migration path across `docs/TechnicalSolution.md`, `docs/require/第16节：Agent Provider 原理解析、实现与代码讲解.md`, and `specs/001-provider-integration/quickstart.md`
+- [x] T029 Run `gofmt` on every changed Go file, then run `go test ./...`, `go vet ./...`, and `CGO_ENABLED=0 go build ./cmd/oryxos`, recording any environment-only live-smoke skip in `specs/001-provider-integration/quickstart.md`
+- [x] T030 Audit the final diff for exactly two Providers, one model per Profile, `name/api_key`-only process Provider declarations, no user-configurable Provider endpoint, no credential-bearing Profile fields, no Eino ADK/automatic Tool execution, no fallback/retry, no `AutoMigrate`, no `mattn/go-sqlite3`, and no extra core table or workspace artifact in `specs/001-provider-integration/checklists/requirements.md`
 
 ---
 

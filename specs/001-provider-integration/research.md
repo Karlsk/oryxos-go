@@ -22,7 +22,7 @@
 - Both constructors return concrete models implementing `model.ToolCallingChatModel` and both connectors expose immutable `WithTools` binding.
 - `schema.ResponseMeta.Usage` contains `PromptTokens`, `CompletionTokens`, and `TotalTokens` integer fields.
 - `glebarez/sqlite v1.11.0` exposes `sqlite.Open(dsn) gorm.Dialector` and imports `modernc.org/sqlite`, not `mattn/go-sqlite3`; GORM `v1.31.2` exposes `gorm.Open`, `DB.Exec`, and `DB.Create`.
-- MiniMax's current official OpenAI-compatible documentation uses `https://api.minimax.io/v1`, lists `MiniMax-M2.7` as a supported model, and requires complete assistant responses to be preserved in multi-turn Tool Calling: <https://platform.minimax.io/docs/api-reference/text-openai-api>.
+- MiniMax's current China-platform OpenAI-compatible documentation uses `https://api.minimax.cn/v1`, lists `MiniMax-M3` as the latest supported model, and requires complete assistant responses to be preserved in multi-turn Tool Calling: <https://platform.minimax.cn/docs/api-reference/text-openai-api>.
 
 Both connector modules declare Eino `v0.7.13` as their minimum. A local source diff from Eino `v0.7.13` to `v0.9.19` confirmed that the production interfaces used here remain source-compatible: `BaseChatModel` is retained as an alias, `ToolCallingChatModel.WithTools` is unchanged, and the message/stream helpers used by the connectors remain available. A complete temporary binary download was interrupted by repeated external proxy timeouts, so implementation must re-run module resolution and the full build gates after adding the pins.
 
@@ -42,7 +42,7 @@ Both connector modules declare Eino `v0.7.13` as their minimum. A local source d
 
 - Unknown process fields, duplicate Provider names, unsupported names, empty credentials, and missing environment variables are fatal configuration errors.
 - Only `deepseek` and `minimax` are accepted.
-- The DeepSeek factory omits `BaseURL`, allowing the native connector to use its documented official default `https://api.deepseek.com/`. The MiniMax factory sets the current official OpenAI-compatible `https://api.minimax.io/v1` on the OpenAI connector. Neither endpoint is accepted from process or Profile YAML.
+- The DeepSeek factory omits `BaseURL`, allowing the native connector to use its documented official default `https://api.deepseek.com/`. The MiniMax factory sets the China-platform OpenAI-compatible `https://api.minimax.cn/v1` on the OpenAI connector. Neither endpoint is accepted from process or Profile YAML.
 - A future custom/self-hosted OpenAI-compatible service requires a separate explicit Provider design; it must not overload the `minimax` identity.
 - Profile files are decoded strictly and independently. Invalid YAML, missing name/model/provider, undeclared Provider references, and duplicate Profile names are diagnostics for that Profile; other valid Profiles still load.
 - Profile files are processed in lexical path order so duplicate-name handling is deterministic; the first valid Profile remains registered and later duplicates are skipped.

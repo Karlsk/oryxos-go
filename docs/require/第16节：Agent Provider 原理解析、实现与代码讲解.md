@@ -103,7 +103,7 @@ type ProviderRegistry struct {
 工厂注册示例：
 
 ```go
-const miniMaxOpenAIBaseURL = "https://api.minimax.io/v1"
+const miniMaxOpenAIBaseURL = "https://api.minimax.cn/v1"
 
 // 工厂注册时，每个 name 对应一个构造函数。
 factories["deepseek"] = func(ctx context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
