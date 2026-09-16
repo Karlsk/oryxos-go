@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/Karlsk/oryxos-go/internal/config"
+	"github.com/Karlsk/oryxos-go/internal/llm"
 	"github.com/Karlsk/oryxos-go/internal/profile"
 	"github.com/Karlsk/oryxos-go/internal/store"
-	"github.com/cloudwego/eino/schema"
 )
 
 func TestProviderSmoke(t *testing.T) {
@@ -40,16 +40,14 @@ func TestProviderSmoke(t *testing.T) {
 			if err := registry.BindProfile(context.Background(), selected, config.ProviderDefinition{Name: tc.provider, APIKey: apiKey}); err != nil {
 				t.Fatalf("BindProfile() error = %v", err)
 			}
-			source := &fakeToolInfoSource{infos: map[string]*schema.ToolInfo{
+			source := &fakeToolDefinitionSource{definitions: map[string]llm.ToolDefinition{
 				"echo": {
-					Name: "echo",
-					Desc: "Echo the supplied text. Call this tool for the smoke test.",
-					ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
-						"text": {Type: schema.String, Desc: "text to echo", Required: true},
-					}),
+					Name:        "echo",
+					Description: "Echo the supplied text. Call this tool for the smoke test.",
+					InputSchema: []byte(`{"type":"object","properties":{"text":{"type":"string","description":"text to echo"}},"required":["text"]}`),
 				},
 			}}
-			adapter, _ := NewToolSchemaAdapter(source)
+			resolver, _ := NewToolSchemaResolver(source)
 			database, err := store.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "smoke.db"))
 			if err != nil {
 				t.Fatalf("OpenSQLite() error = %v", err)
@@ -63,14 +61,14 @@ func TestProviderSmoke(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewLlmCallRepository() error = %v", err)
 			}
-			service, err := NewService(registry, adapter, recorder)
+			service, err := NewService(registry, resolver, recorder)
 			if err != nil {
 				t.Fatalf("NewService() error = %v", err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			response, err := service.Chat(ctx, "smoke-session-"+tc.name, selected, []*schema.Message{{
-				Role:    schema.User,
+			response, err := service.Chat(ctx, "smoke-session-"+tc.name, selected, []llm.Message{{
+				Role:    llm.RoleUser,
 				Content: `Call the echo tool exactly once with text "oryxos-smoke". Do not answer directly.`,
 			}})
 			var calls []store.LlmCall
@@ -83,7 +81,7 @@ func TestProviderSmoke(t *testing.T) {
 				}
 				t.Fatalf("Chat() error = %v", err)
 			}
-			if response == nil || len(response.ToolCalls) == 0 || response.ToolCalls[0].ID == "" {
+			if len(response.Message.ToolCalls) == 0 || response.Message.ToolCalls[0].ID == "" {
 				t.Fatalf("response = %#v, want preserved Tool call with ID", response)
 			}
 			if len(calls) != 1 || !calls[0].Success || calls[0].SessionID != "smoke-session-"+tc.name {

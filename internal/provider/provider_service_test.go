@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Karlsk/oryxos-go/internal/config"
+	"github.com/Karlsk/oryxos-go/internal/llm"
 	"github.com/Karlsk/oryxos-go/internal/profile"
 	deepseekmodel "github.com/cloudwego/eino-ext/components/model/deepseek"
 	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
@@ -59,9 +60,9 @@ func TestRegistryRoutesAndIsolatesProfiles(t *testing.T) {
 	var captured []ProviderConfig
 	for _, providerName := range []string{DeepSeek, MiniMax} {
 		name := providerName
-		if err := registry.RegisterFactory(name, func(_ context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
+		if err := registry.RegisterFactory(name, func(_ context.Context, cfg ProviderConfig) (llm.ChatModel, error) {
 			captured = append(captured, cfg)
-			fake, _ := newFakeModel(&schema.Message{Role: schema.Assistant, Content: cfg.Model}, nil)
+			fake, _ := newFakeOryxModel(llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: cfg.Model}}, nil)
 			return fake, nil
 		}); err != nil {
 			t.Fatalf("RegisterFactory(%s) error = %v", name, err)
@@ -101,8 +102,8 @@ func TestRegistryBindProfilesAtomicallyRebuildsCurrentSnapshot(t *testing.T) {
 	registry := NewRegistry()
 	for _, providerName := range []string{DeepSeek, MiniMax} {
 		name := providerName
-		if err := registry.RegisterFactory(name, func(_ context.Context, cfg ProviderConfig) (model.ToolCallingChatModel, error) {
-			fake, _ := newFakeModel(&schema.Message{Role: schema.Assistant, Content: cfg.Name + ":" + cfg.Model}, nil)
+		if err := registry.RegisterFactory(name, func(_ context.Context, cfg ProviderConfig) (llm.ChatModel, error) {
+			fake, _ := newFakeOryxModel(llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: cfg.Name + ":" + cfg.Model}}, nil)
 			return fake, nil
 		}); err != nil {
 			t.Fatalf("RegisterFactory(%s) error = %v", name, err)
@@ -134,54 +135,53 @@ func TestRegistryBindProfilesAtomicallyRebuildsCurrentSnapshot(t *testing.T) {
 	if !ok {
 		t.Fatal("Model(agent) = false")
 	}
-	response, err := bound.Generate(context.Background(), nil)
-	if err != nil || response.Content != "minimax:MiniMax-M3" {
+	response, err := bound.Generate(context.Background(), llm.Request{})
+	if err != nil || response.Message.Content != "minimax:MiniMax-M3" {
 		t.Fatalf("rebuilt model response = %#v, %v", response, err)
 	}
 }
 
 func TestProviderServicePreservesToolCallAndNeverExecutesTool(t *testing.T) {
-	response := &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{ID: "call-1", Type: "function", Function: schema.FunctionCall{Name: "read_file", Arguments: `{"path":"README.md"}`}}}}
-	fake, state := newFakeModel(response, nil)
+	response := llm.Response{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call-1", Type: "function", Function: llm.FunctionCall{Name: "read_file", Arguments: `{"path":"README.md"}`}}}}}
+	fake, state := newFakeOryxModel(response, nil)
 	registry := NewRegistry()
-	_ = registry.RegisterFactory(DeepSeek, func(context.Context, ProviderConfig) (model.ToolCallingChatModel, error) { return fake, nil })
+	_ = registry.RegisterFactory(DeepSeek, func(context.Context, ProviderConfig) (llm.ChatModel, error) { return fake, nil })
 	selected := &profile.Profile{Name: "ops", Provider: profile.ProviderConfig{Name: DeepSeek, Model: "deepseek-chat", Temperature: 0.3}, Tools: []string{"read_file"}}
 	if err := registry.BindProfile(context.Background(), selected, config.ProviderDefinition{Name: DeepSeek, APIKey: "key"}); err != nil {
 		t.Fatalf("BindProfile() error = %v", err)
 	}
-	source := &fakeToolInfoSource{infos: map[string]*schema.ToolInfo{"read_file": {Name: "read_file", Desc: "read"}}}
-	adapter, _ := NewToolSchemaAdapter(source)
+	source := &fakeToolDefinitionSource{definitions: map[string]llm.ToolDefinition{"read_file": {Name: "read_file", Description: "read"}}}
+	resolver, _ := NewToolSchemaResolver(source)
 	recorder := &fakeRecorder{}
-	service, err := NewService(registry, adapter, recorder)
+	service, err := NewService(registry, resolver, recorder)
 	if err != nil {
 		t.Fatalf("NewService() error = %v", err)
 	}
 	ctx := context.WithValue(context.Background(), testContextKey{}, "sentinel")
-	got, err := service.Chat(ctx, "session-1", selected, []*schema.Message{{Role: schema.User, Content: "read"}})
+	got, err := service.Chat(ctx, "session-1", selected, []llm.Message{{Role: llm.RoleUser, Content: "read"}})
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
-	if got != response || len(got.ToolCalls) != 1 || got.ToolCalls[0].ID != "call-1" {
+	if len(got.Message.ToolCalls) != 1 || got.Message.ToolCalls[0].ID != "call-1" {
 		t.Fatalf("Chat() response = %#v, want unchanged tool call", got)
 	}
-	if state.generateCalls != 1 || state.withToolsCalls != 1 || len(state.boundTools) != 1 || state.contextObserved != ctx {
+	if state.generateCalls != 1 || len(state.requests) != 1 || len(state.requests[0].Tools) != 1 || state.contextObserved != ctx {
 		t.Fatalf("model state = %#v, want one bound Generate with original context", state)
 	}
-	options := state.options[0]
-	if options.Model == nil || *options.Model != "deepseek-chat" || options.Temperature == nil || *options.Temperature != 0.3 {
-		t.Fatalf("options = %#v, want Profile model and temperature", options)
+	if state.requests[0].Tools[0].Name != "read_file" || len(state.requests[0].Messages) != 1 {
+		t.Fatalf("model request = %#v, want OryxOS messages and Tool metadata", state.requests[0])
 	}
 }
 
 func TestProviderServiceAuditsSuccessFailureAndPersistenceErrors(t *testing.T) {
 	t.Run("success_with_usage", func(t *testing.T) {
-		response := &schema.Message{Role: schema.Assistant, Content: "ok", ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5}}}
-		fake, _ := newFakeModel(response, nil)
+		response := llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}, Usage: llm.Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5}}
+		fake, _ := newFakeOryxModel(response, nil)
 		service, recorder, selected := serviceForTest(t, fake)
 		base := time.Date(2026, 9, 15, 1, 2, 3, 0, time.UTC)
 		service.now = sequenceClock(base, base.Add(7*time.Millisecond))
 		got, err := service.Chat(context.Background(), "session-success", selected, nil)
-		if err != nil || got != response {
+		if err != nil || got.Message.Content != response.Message.Content {
 			t.Fatalf("Chat() = %#v, %v", got, err)
 		}
 		if len(recorder.calls) != 1 {
@@ -196,7 +196,7 @@ func TestProviderServiceAuditsSuccessFailureAndPersistenceErrors(t *testing.T) {
 	t.Run("failure_is_sanitized_and_audited", func(t *testing.T) {
 		const secret = "sk-provider-secret"
 		providerErr := errors.New("upstream rejected api key " + secret)
-		fake, _ := newFakeModel(nil, providerErr)
+		fake, _ := newFakeOryxModel(llm.Response{}, providerErr)
 		service, recorder, selected := serviceForTest(t, fake)
 		_, err := service.Chat(context.Background(), "session-failure", selected, nil)
 		if err == nil || strings.Contains(err.Error(), secret) {
@@ -213,7 +213,7 @@ func TestProviderServiceAuditsSuccessFailureAndPersistenceErrors(t *testing.T) {
 	})
 
 	t.Run("missing_usage_records_zero", func(t *testing.T) {
-		fake, _ := newFakeModel(&schema.Message{Role: schema.Assistant, Content: "ok"}, nil)
+		fake, _ := newFakeOryxModel(llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "ok"}}, nil)
 		service, recorder, selected := serviceForTest(t, fake)
 		_, err := service.Chat(context.Background(), "session-zero", selected, nil)
 		if err != nil {
@@ -227,7 +227,7 @@ func TestProviderServiceAuditsSuccessFailureAndPersistenceErrors(t *testing.T) {
 
 	t.Run("persistence_error_wins", func(t *testing.T) {
 		persistErr := errors.New("insert failed")
-		fake, _ := newFakeModel(nil, errors.New("provider failed"))
+		fake, _ := newFakeOryxModel(llm.Response{}, errors.New("provider failed"))
 		service, recorder, selected := serviceForTest(t, fake)
 		recorder.err = persistErr
 		_, err := service.Chat(context.Background(), "session-persist", selected, nil)
@@ -240,7 +240,7 @@ func TestProviderServiceAuditsSuccessFailureAndPersistenceErrors(t *testing.T) {
 	})
 
 	t.Run("canceled_call_uses_non_canceled_audit_context", func(t *testing.T) {
-		fake, _ := newFakeModel(nil, context.Canceled)
+		fake, _ := newFakeOryxModel(llm.Response{}, context.Canceled)
 		service, recorder, selected := serviceForTest(t, fake)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -255,7 +255,7 @@ func TestProviderServiceAuditsSuccessFailureAndPersistenceErrors(t *testing.T) {
 }
 
 func TestProviderServiceRejectsInvalidInputsBeforeModelCall(t *testing.T) {
-	fake, state := newFakeModel(&schema.Message{}, nil)
+	fake, state := newFakeOryxModel(llm.Response{}, nil)
 	service, _, selected := serviceForTest(t, fake)
 	cases := []struct {
 		name      string
@@ -278,10 +278,10 @@ func TestProviderServiceRejectsInvalidInputsBeforeModelCall(t *testing.T) {
 	}
 }
 
-func serviceForTest(t *testing.T, fake model.ToolCallingChatModel) (*Service, *fakeRecorder, *profile.Profile) {
+func serviceForTest(t *testing.T, fake llm.ChatModel) (*Service, *fakeRecorder, *profile.Profile) {
 	t.Helper()
 	registry := NewRegistry()
-	if err := registry.RegisterFactory(DeepSeek, func(context.Context, ProviderConfig) (model.ToolCallingChatModel, error) { return fake, nil }); err != nil {
+	if err := registry.RegisterFactory(DeepSeek, func(context.Context, ProviderConfig) (llm.ChatModel, error) { return fake, nil }); err != nil {
 		t.Fatalf("RegisterFactory() error = %v", err)
 	}
 	selected := &profile.Profile{Name: "agent", Provider: profile.ProviderConfig{Name: DeepSeek, Model: "deepseek-chat", Temperature: 0.7}}

@@ -8,10 +8,9 @@ import (
 	"time"
 
 	"github.com/Karlsk/oryxos-go/internal/config"
+	"github.com/Karlsk/oryxos-go/internal/llm"
 	"github.com/Karlsk/oryxos-go/internal/profile"
 	"github.com/Karlsk/oryxos-go/internal/store"
-	"github.com/cloudwego/eino/components/model"
-	"github.com/cloudwego/eino/schema"
 )
 
 // LlmCallRecorder persists one record for each model call attempt.
@@ -22,7 +21,7 @@ type LlmCallRecorder interface {
 // Service performs one synchronous model call for a Profile binding.
 type Service struct {
 	registry *Registry
-	adapter  ToolSchemaAdapter
+	resolver ToolSchemaResolver
 	recorder LlmCallRecorder
 	now      func() time.Time
 }
@@ -30,66 +29,56 @@ type Service struct {
 // ProviderService is the explicit architecture name for the Provider call boundary.
 type ProviderService = Service
 
-// NewService constructs the Provider service. Adapter may be nil only for Profiles with no Tools.
-func NewService(registry *Registry, adapter ToolSchemaAdapter, recorder LlmCallRecorder) (*Service, error) {
+// NewService constructs the Provider service. Resolver may be nil only for Profiles with no Tools.
+func NewService(registry *Registry, resolver ToolSchemaResolver, recorder LlmCallRecorder) (*Service, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("create provider service: registry is nil")
 	}
 	if recorder == nil {
 		return nil, fmt.Errorf("create provider service: recorder is nil")
 	}
-	return &Service{registry: registry, adapter: adapter, recorder: recorder, now: time.Now}, nil
+	return &Service{registry: registry, resolver: resolver, recorder: recorder, now: time.Now}, nil
 }
 
 // NewProviderService constructs the documented ProviderService API.
-func NewProviderService(registry *ProviderRegistry, adapter ToolSchemaAdapter, recorder LlmCallRecorder) (*ProviderService, error) {
-	return NewService(registry, adapter, recorder)
+func NewProviderService(registry *ProviderRegistry, resolver ToolSchemaResolver, recorder LlmCallRecorder) (*ProviderService, error) {
+	return NewService(registry, resolver, recorder)
 }
 
-// Chat binds metadata-only Tool schemas, calls the Profile model once, audits the outcome,
-// and returns the connector response unchanged.
-func (service *Service) Chat(ctx context.Context, sessionID string, selected *profile.Profile, messages []*schema.Message) (*schema.Message, error) {
+// Chat resolves metadata-only Tool definitions, calls the Profile model once,
+// audits the outcome, and returns the OryxOS response.
+func (service *Service) Chat(ctx context.Context, sessionID string, selected *profile.Profile, messages []llm.Message) (llm.Response, error) {
 	if service == nil || service.registry == nil || service.recorder == nil {
-		return nil, fmt.Errorf("provider chat: service is not initialized")
+		return llm.Response{}, fmt.Errorf("provider chat: service is not initialized")
 	}
 	if ctx == nil {
-		return nil, fmt.Errorf("provider chat: context is nil")
+		return llm.Response{}, fmt.Errorf("provider chat: context is nil")
 	}
 	if strings.TrimSpace(sessionID) == "" {
-		return nil, fmt.Errorf("provider chat: session_id is required")
+		return llm.Response{}, fmt.Errorf("provider chat: session_id is required")
 	}
 	if selected == nil || strings.TrimSpace(selected.Name) == "" {
-		return nil, fmt.Errorf("provider chat: profile is required")
+		return llm.Response{}, fmt.Errorf("provider chat: profile is required")
 	}
 	chatModel, ok := service.registry.Model(selected.Name)
 	if !ok {
-		return nil, fmt.Errorf("provider chat: model binding for profile %q not found", selected.Name)
+		return llm.Response{}, fmt.Errorf("provider chat: model binding for profile %q not found", selected.Name)
 	}
+	var definitions []llm.ToolDefinition
 	if len(selected.Tools) > 0 {
-		if service.adapter == nil {
-			return nil, fmt.Errorf("provider chat: tool schema adapter is required")
+		if service.resolver == nil {
+			return llm.Response{}, fmt.Errorf("provider chat: tool schema resolver is required")
 		}
-		toolInfos, err := service.adapter.ToEinoToolInfos(ctx, selected.Tools)
+		var err error
+		definitions, err = service.resolver.Resolve(ctx, selected.Tools)
 		if err != nil {
-			return nil, safeWrap("provider chat: resolve tool schemas", err)
-		}
-		chatModel, err = chatModel.WithTools(toolInfos)
-		if err != nil {
-			return nil, safeWrap("provider chat: bind tool schemas", err)
+			return llm.Response{}, safeWrap("provider chat: resolve tool schemas", err)
 		}
 	}
 
 	startedAt := service.now()
-	response, callErr := chatModel.Generate(
-		ctx,
-		messages,
-		model.WithTemperature(selected.Provider.Temperature),
-		model.WithModel(selected.Provider.Model),
-	)
+	response, callErr := chatModel.Generate(ctx, llm.Request{Messages: messages, Tools: definitions})
 	finishedAt := service.now()
-	if callErr == nil && response == nil {
-		callErr = fmt.Errorf("provider returned nil response")
-	}
 	duration := finishedAt.Sub(startedAt).Milliseconds()
 	if duration < 0 {
 		duration = 0
@@ -103,10 +92,10 @@ func (service *Service) Chat(ctx context.Context, sessionID string, selected *pr
 		DurationMS: duration,
 		CreatedAt:  finishedAt.UTC(),
 	}
-	if callErr == nil && response.ResponseMeta != nil && response.ResponseMeta.Usage != nil {
-		call.PromptTokens = response.ResponseMeta.Usage.PromptTokens
-		call.CompletionTokens = response.ResponseMeta.Usage.CompletionTokens
-		call.TotalTokens = response.ResponseMeta.Usage.TotalTokens
+	if callErr == nil {
+		call.PromptTokens = response.Usage.PromptTokens
+		call.CompletionTokens = response.Usage.CompletionTokens
+		call.TotalTokens = response.Usage.TotalTokens
 	}
 	var safeCallErr error
 	if callErr != nil {
@@ -118,12 +107,12 @@ func (service *Service) Chat(ctx context.Context, sessionID string, selected *pr
 	if persistErr := service.recorder.Create(context.WithoutCancel(ctx), call); persistErr != nil {
 		safePersistErr := safeWrap("persist llm call", persistErr)
 		if safeCallErr != nil {
-			return nil, errors.Join(safePersistErr, safeCallErr)
+			return llm.Response{}, errors.Join(safePersistErr, safeCallErr)
 		}
-		return nil, safePersistErr
+		return llm.Response{}, safePersistErr
 	}
 	if safeCallErr != nil {
-		return nil, safeCallErr
+		return llm.Response{}, safeCallErr
 	}
 	return response, nil
 }

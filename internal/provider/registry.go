@@ -7,15 +7,15 @@ import (
 	"sync"
 
 	"github.com/Karlsk/oryxos-go/internal/config"
+	"github.com/Karlsk/oryxos-go/internal/llm"
 	"github.com/Karlsk/oryxos-go/internal/profile"
-	"github.com/cloudwego/eino/components/model"
 )
 
 // Registry owns factory routing by Provider name and model instances by Profile name.
 type Registry struct {
 	mu        sync.RWMutex
 	factories map[string]ModelFactory
-	models    map[string]model.ToolCallingChatModel
+	models    map[string]llm.ChatModel
 }
 
 // ProviderRegistry is the explicit architecture name for the Provider registry.
@@ -25,7 +25,7 @@ type ProviderRegistry = Registry
 func NewRegistry() *Registry {
 	return &Registry{
 		factories: make(map[string]ModelFactory),
-		models:    make(map[string]model.ToolCallingChatModel),
+		models:    make(map[string]llm.ChatModel),
 	}
 }
 
@@ -139,7 +139,7 @@ func (registry *Registry) BindProfiles(ctx context.Context, profiles *profile.Re
 	}
 	registry.mu.RUnlock()
 
-	rebuilt := make(map[string]model.ToolCallingChatModel, profiles.Len())
+	rebuilt := make(map[string]llm.ChatModel, profiles.Len())
 	for _, selected := range profiles.List() {
 		definition, ok := byName[selected.Provider.Name]
 		if !ok {
@@ -171,7 +171,7 @@ func (registry *Registry) BindProfiles(ctx context.Context, profiles *profile.Re
 }
 
 // Model returns the isolated model bound to Profile name.
-func (registry *Registry) Model(profileName string) (model.ToolCallingChatModel, bool) {
+func (registry *Registry) Model(profileName string) (llm.ChatModel, bool) {
 	if registry == nil {
 		return nil, false
 	}

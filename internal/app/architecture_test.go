@@ -1,9 +1,12 @@
 package app
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -44,5 +47,37 @@ func TestArchitectureBusinessPlaceholdersExact(t *testing.T) {
 				t.Fatalf("placeholder mismatch\nwant:\n%s\ngot:\n%s", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestArchitectureEinoImportsStayInsideProvider(t *testing.T) {
+	internalRoot := filepath.Join(repositoryRoot(t), "internal")
+	err := filepath.WalkDir(internalRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+		relative, err := filepath.Rel(internalRoot, path)
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(relative, "provider"+string(filepath.Separator)) {
+			return nil
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		for _, imported := range parsed.Imports {
+			if strings.Contains(imported.Path.Value, "github.com/cloudwego/eino") {
+				t.Errorf("Eino import outside internal/provider: %s imports %s", relative, imported.Path.Value)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan internal imports: %v", err)
 	}
 }

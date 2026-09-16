@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/Karlsk/oryxos-go/internal/llm"
 	"github.com/Karlsk/oryxos-go/internal/store"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -65,18 +66,43 @@ func (recorder *fakeRecorder) Create(ctx context.Context, call *store.LlmCall) e
 	return recorder.err
 }
 
-type fakeToolInfoSource struct {
-	infos map[string]*schema.ToolInfo
-	calls []string
-}
-
-func (source *fakeToolInfoSource) Info(_ context.Context, name string) (*schema.ToolInfo, bool) {
-	source.calls = append(source.calls, name)
-	info, ok := source.infos[name]
-	return info, ok
-}
-
 func newFakeModel(response *schema.Message, err error) (*fakeModel, *fakeModelState) {
 	state := &fakeModelState{response: response, err: err}
 	return &fakeModel{state: state}, state
+}
+
+type fakeOryxModelState struct {
+	mu              sync.Mutex
+	response        llm.Response
+	err             error
+	generateCalls   int
+	requests        []llm.Request
+	contextObserved context.Context
+}
+
+type fakeOryxModel struct{ state *fakeOryxModelState }
+
+func (fake *fakeOryxModel) Generate(ctx context.Context, request llm.Request) (llm.Response, error) {
+	fake.state.mu.Lock()
+	defer fake.state.mu.Unlock()
+	fake.state.generateCalls++
+	fake.state.contextObserved = ctx
+	fake.state.requests = append(fake.state.requests, request)
+	return fake.state.response, fake.state.err
+}
+
+func newFakeOryxModel(response llm.Response, err error) (*fakeOryxModel, *fakeOryxModelState) {
+	state := &fakeOryxModelState{response: response, err: err}
+	return &fakeOryxModel{state: state}, state
+}
+
+type fakeToolDefinitionSource struct {
+	definitions map[string]llm.ToolDefinition
+	calls       []string
+}
+
+func (source *fakeToolDefinitionSource) Info(_ context.Context, name string) (llm.ToolDefinition, bool) {
+	source.calls = append(source.calls, name)
+	definition, ok := source.definitions[name]
+	return definition, ok
 }
