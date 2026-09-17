@@ -29,8 +29,8 @@ identity:
 
 provider:
   name: deepseek
-  model: deepseek-chat
-  temperature: 0.7
+  model: deepseek-flash
+  temperature: 0.3
 
 tools:
   - read_file
