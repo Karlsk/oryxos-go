@@ -3,8 +3,11 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
 
 	"github.com/Karlsk/oryxos-go/internal/llm"
 	"github.com/cloudwego/eino/components/model"
@@ -38,21 +41,9 @@ func (adapter *einoChatModelAdapter) Generate(ctx context.Context, request llm.R
 		return llm.Response{}, fmt.Errorf("generate with Eino adapter: context is nil")
 	}
 
-	messages, err := toEinoMessages(request.Messages)
+	connector, messages, err := adapter.prepare(request)
 	if err != nil {
 		return llm.Response{}, err
-	}
-	tools, err := toEinoToolInfos(request.Tools)
-	if err != nil {
-		return llm.Response{}, err
-	}
-
-	connector := adapter.connector
-	if len(tools) > 0 {
-		connector, err = connector.WithTools(tools)
-		if err != nil {
-			return llm.Response{}, fmt.Errorf("bind Eino Tool schemas: %w", err)
-		}
 	}
 	message, err := connector.Generate(ctx, messages)
 	if err != nil {
@@ -62,6 +53,126 @@ func (adapter *einoChatModelAdapter) Generate(ctx context.Context, request llm.R
 		return llm.Response{}, fmt.Errorf("Eino connector returned nil response")
 	}
 	return fromEinoResponse(message)
+}
+
+func (adapter *einoChatModelAdapter) Stream(ctx context.Context, request llm.Request) (llm.ResponseStream, error) {
+	if adapter == nil || adapter.connector == nil {
+		return nil, fmt.Errorf("stream with Eino adapter: adapter is not initialized")
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("stream with Eino adapter: context is nil")
+	}
+	connector, messages, err := adapter.prepare(request)
+	if err != nil {
+		return nil, err
+	}
+	reader, err := connector.Stream(ctx, messages)
+	if err != nil {
+		return nil, err
+	}
+	if reader == nil {
+		return nil, fmt.Errorf("Eino connector returned nil stream")
+	}
+	return &einoResponseStream{reader: reader}, nil
+}
+
+func (adapter *einoChatModelAdapter) prepare(request llm.Request) (model.ToolCallingChatModel, []*schema.Message, error) {
+	messages, err := toEinoMessages(request.Messages)
+	if err != nil {
+		return nil, nil, err
+	}
+	tools, err := toEinoToolInfos(request.Tools)
+	if err != nil {
+		return nil, nil, err
+	}
+	connector := adapter.connector
+	if len(tools) > 0 {
+		connector, err = connector.WithTools(tools)
+		if err != nil {
+			return nil, nil, fmt.Errorf("bind Eino Tool schemas: %w", err)
+		}
+	}
+	return connector, messages, nil
+}
+
+type einoResponseStream struct {
+	mu        sync.Mutex
+	reader    *schema.StreamReader[*schema.Message]
+	chunks    []*schema.Message
+	done      bool
+	closed    bool
+	closeOnce sync.Once
+}
+
+func (stream *einoResponseStream) Recv() (llm.StreamEvent, error) {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.closed {
+		return llm.StreamEvent{}, io.ErrClosedPipe
+	}
+	if stream.done {
+		return llm.StreamEvent{}, io.EOF
+	}
+
+	chunk, err := stream.reader.Recv()
+	if err == nil {
+		if chunk == nil {
+			stream.finish()
+			return llm.StreamEvent{}, fmt.Errorf("Eino connector returned nil stream chunk")
+		}
+		stream.chunks = append(stream.chunks, chunk)
+		delta, convertErr := fromEinoStreamChunk(chunk)
+		if convertErr != nil {
+			stream.finish()
+			return llm.StreamEvent{}, convertErr
+		}
+		return llm.StreamEvent{Kind: llm.StreamEventDelta, Delta: delta}, nil
+	}
+	if !errors.Is(err, io.EOF) {
+		stream.finish()
+		return llm.StreamEvent{}, err
+	}
+	if len(stream.chunks) == 0 {
+		stream.finish()
+		return llm.StreamEvent{}, fmt.Errorf("Eino connector stream completed without a response")
+	}
+	message, concatErr := schema.ConcatMessages(stream.chunks)
+	if concatErr != nil {
+		stream.finish()
+		return llm.StreamEvent{}, fmt.Errorf("merge Eino stream response: %w", concatErr)
+	}
+	response, convertErr := fromEinoResponse(message)
+	if convertErr != nil {
+		stream.finish()
+		return llm.StreamEvent{}, convertErr
+	}
+	stream.finish()
+	return llm.StreamEvent{Kind: llm.StreamEventCompleted, Response: &response}, nil
+}
+
+func (stream *einoResponseStream) Close() error {
+	if stream == nil {
+		return nil
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	stream.closed = true
+	stream.done = true
+	stream.closeReader()
+	return nil
+}
+
+func (stream *einoResponseStream) finish() {
+	stream.done = true
+	stream.closeReader()
+}
+
+func (stream *einoResponseStream) closeReader() {
+	stream.closeOnce.Do(func() {
+		if stream.reader != nil {
+			stream.reader.Close()
+		}
+	})
 }
 
 func toEinoMessages(messages []llm.Message) ([]*schema.Message, error) {
@@ -164,12 +275,24 @@ func fromEinoResponse(message *schema.Message) (llm.Response, error) {
 }
 
 func fromEinoMessage(message *schema.Message) (llm.Message, error) {
+	return fromEinoMessageWithRoleMode(message, false)
+}
+
+func fromEinoStreamChunk(message *schema.Message) (llm.Message, error) {
+	return fromEinoMessageWithRoleMode(message, true)
+}
+
+func fromEinoMessageWithRoleMode(message *schema.Message, allowEmptyRole bool) (llm.Message, error) {
 	if message == nil {
 		return llm.Message{}, fmt.Errorf("convert Eino message: message is nil")
 	}
-	role, err := fromEinoRole(message.Role)
-	if err != nil {
-		return llm.Message{}, err
+	var role llm.Role
+	if message.Role != "" || !allowEmptyRole {
+		var err error
+		role, err = fromEinoRole(message.Role)
+		if err != nil {
+			return llm.Message{}, err
+		}
 	}
 	toolCalls := make([]llm.ToolCall, len(message.ToolCalls))
 	for index, call := range message.ToolCalls {

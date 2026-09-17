@@ -48,51 +48,75 @@ func NewProviderService(registry *ProviderRegistry, resolver ToolSchemaResolver,
 // Chat resolves metadata-only Tool definitions, calls the Profile model once,
 // audits the outcome, and returns the OryxOS response.
 func (service *Service) Chat(ctx context.Context, sessionID string, selected *profile.Profile, messages []llm.Message) (llm.Response, error) {
-	if service == nil || service.registry == nil || service.recorder == nil {
-		return llm.Response{}, fmt.Errorf("provider chat: service is not initialized")
-	}
-	if ctx == nil {
-		return llm.Response{}, fmt.Errorf("provider chat: context is nil")
-	}
-	if strings.TrimSpace(sessionID) == "" {
-		return llm.Response{}, fmt.Errorf("provider chat: session_id is required")
-	}
-	if selected == nil || strings.TrimSpace(selected.Name) == "" {
-		return llm.Response{}, fmt.Errorf("provider chat: profile is required")
-	}
-	chatModel, ok := service.registry.Model(selected.Name)
-	if !ok {
-		return llm.Response{}, fmt.Errorf("provider chat: model binding for profile %q not found", selected.Name)
-	}
-	var definitions []llm.ToolDefinition
-	if len(selected.Tools) > 0 {
-		if service.resolver == nil {
-			return llm.Response{}, fmt.Errorf("provider chat: tool schema resolver is required")
-		}
-		var err error
-		definitions, err = service.resolver.Resolve(ctx, selected.Tools)
-		if err != nil {
-			return llm.Response{}, safeWrap("provider chat: resolve tool schemas", err)
-		}
+	chatModel, definitions, err := service.prepareCall(ctx, sessionID, selected, "provider chat")
+	if err != nil {
+		return llm.Response{}, err
 	}
 
 	startedAt := service.now()
 	response, callErr := chatModel.Generate(ctx, llm.Request{Messages: messages, Tools: definitions})
+	if outcomeErr := service.recordOutcome(ctx, callMetadataFrom(sessionID, selected), startedAt, &response, callErr); outcomeErr != nil {
+		return llm.Response{}, outcomeErr
+	}
+	return response, nil
+}
+
+type callMetadata struct {
+	sessionID string
+	provider  string
+	model     string
+}
+
+func callMetadataFrom(sessionID string, selected *profile.Profile) callMetadata {
+	return callMetadata{sessionID: sessionID, provider: selected.Provider.Name, model: selected.Provider.Model}
+}
+
+func (service *Service) prepareCall(ctx context.Context, sessionID string, selected *profile.Profile, operation string) (llm.ChatModel, []llm.ToolDefinition, error) {
+	if service == nil || service.registry == nil || service.recorder == nil {
+		return nil, nil, fmt.Errorf("%s: service is not initialized", operation)
+	}
+	if ctx == nil {
+		return nil, nil, fmt.Errorf("%s: context is nil", operation)
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, nil, fmt.Errorf("%s: session_id is required", operation)
+	}
+	if selected == nil || strings.TrimSpace(selected.Name) == "" {
+		return nil, nil, fmt.Errorf("%s: profile is required", operation)
+	}
+	chatModel, ok := service.registry.Model(selected.Name)
+	if !ok {
+		return nil, nil, fmt.Errorf("%s: model binding for profile %q not found", operation, selected.Name)
+	}
+	var definitions []llm.ToolDefinition
+	if len(selected.Tools) > 0 {
+		if service.resolver == nil {
+			return nil, nil, fmt.Errorf("%s: tool schema resolver is required", operation)
+		}
+		var err error
+		definitions, err = service.resolver.Resolve(ctx, selected.Tools)
+		if err != nil {
+			return nil, nil, safeWrap(operation+": resolve tool schemas", err)
+		}
+	}
+	return chatModel, definitions, nil
+}
+
+func (service *Service) recordOutcome(ctx context.Context, metadata callMetadata, startedAt time.Time, response *llm.Response, callErr error) error {
 	finishedAt := service.now()
 	duration := finishedAt.Sub(startedAt).Milliseconds()
 	if duration < 0 {
 		duration = 0
 	}
-
 	call := &store.LlmCall{
-		SessionID:  sessionID,
-		Provider:   selected.Provider.Name,
-		Model:      selected.Provider.Model,
+		SessionID:  metadata.sessionID,
+		Provider:   metadata.provider,
+		Model:      metadata.model,
 		Success:    callErr == nil,
 		DurationMS: duration,
 		CreatedAt:  finishedAt.UTC(),
 	}
-	if callErr == nil {
+	if callErr == nil && response != nil {
 		call.PromptTokens = response.Usage.PromptTokens
 		call.CompletionTokens = response.Usage.CompletionTokens
 		call.TotalTokens = response.Usage.TotalTokens
@@ -103,18 +127,14 @@ func (service *Service) Chat(ctx context.Context, sessionID string, selected *pr
 		message := safeCallErr.Error()
 		call.ErrorMessage = &message
 	}
-
 	if persistErr := service.recorder.Create(context.WithoutCancel(ctx), call); persistErr != nil {
 		safePersistErr := safeWrap("persist llm call", persistErr)
 		if safeCallErr != nil {
-			return llm.Response{}, errors.Join(safePersistErr, safeCallErr)
+			return errors.Join(safePersistErr, safeCallErr)
 		}
-		return llm.Response{}, safePersistErr
+		return safePersistErr
 	}
-	if safeCallErr != nil {
-		return llm.Response{}, safeCallErr
-	}
-	return response, nil
+	return safeCallErr
 }
 
 type sanitizedWrappedError struct {

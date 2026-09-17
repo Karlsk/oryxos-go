@@ -7,9 +7,10 @@ import (
 	"encoding/json"
 )
 
-// ChatModel performs one synchronous model generation.
+// ChatModel performs complete or incremental model generation.
 type ChatModel interface {
 	Generate(ctx context.Context, request Request) (Response, error)
+	Stream(ctx context.Context, request Request) (ResponseStream, error)
 }
 
 // Request is one model generation request.
@@ -23,6 +24,31 @@ type Response struct {
 	Message      Message
 	Usage        Usage
 	FinishReason string
+}
+
+// StreamEventKind identifies an incremental or terminal Stream event.
+type StreamEventKind string
+
+const (
+	// StreamEventDelta carries one Provider response chunk.
+	StreamEventDelta StreamEventKind = "delta"
+	// StreamEventCompleted carries the one complete merged response.
+	StreamEventCompleted StreamEventKind = "completed"
+)
+
+// StreamEvent carries either Delta or Response according to Kind.
+type StreamEvent struct {
+	Kind     StreamEventKind
+	Delta    Message
+	Response *Response
+}
+
+// ResponseStream is a single-consumer pull stream. A successful stream yields
+// zero or more delta events, one completed event, then io.EOF. Close must be
+// idempotent at the OryxOS boundary.
+type ResponseStream interface {
+	Recv() (StreamEvent, error)
+	Close() error
 }
 
 // Role identifies the participant that produced a message.
