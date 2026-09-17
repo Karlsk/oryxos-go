@@ -1,17 +1,16 @@
 <!--
 Sync Impact Report
-- Version change: 2.0.0 -> 3.0.0
+- Version change: 3.0.0 -> 4.0.0
 - Modified principles:
-  - III. Eino Core Is the Runtime Boundary: made vendor endpoint configuration a Provider-factory responsibility
-  - IV. Providers Are Explicitly Mapped and Profile-Isolated: removed user-configurable Provider endpoints from the process declaration contract
-  - VIII. Security and the Pure-Go Binary Are Non-Negotiable: narrowed Provider startup input to name and environment-backed API key
+  - III. OryxOS Owns the Runtime Model Boundary: replaced the Eino-core runtime contract with the approved OryxOS llm.ChatModel port and confined Eino to Provider adapters
+  - IV. Providers Are Explicitly Mapped and Profile-Isolated: changed stored model instances from Eino types to OryxOS llm.ChatModel
+  - IX. All Entry Points Share One Synchronous Runtime: clarified that Provider-level pull streaming does not expose ReAct, CLI, SSE, or WebSocket streaming
 - Modified sections:
-  - Runtime Workspace and Configuration: made explicit Provider endpoints factory-owned and non-overridable
+  - Technical and Scope Constraints: changed the dependency direction to the OryxOS model port
 - Added sections: none
 - Removed sections: none
 - Follow-up TODOs:
-  - Existing default Profile templates must remove legacy api_key/base_url during lesson 16 implementation
-  - Process-level Provider decoding must reject legacy or unknown base_url fields
+  - Later ReAct/CLI/Web streaming requires a separate approved feature and MUST NOT be inferred from Provider Stream
 -->
 
 # OryxOS Constitution
@@ -49,26 +48,30 @@ tool execution MUST be disabled so that each tool call is executed exactly once 
 `ToolExecutor`. The rationale is to preserve deterministic behavior and leave the core
 runtime adaptable without surrendering control to a framework.
 
-### III. Eino Core Is the Runtime Boundary
+### III. OryxOS Owns the Runtime Model Boundary
 
-Runtime code MUST depend on Eino core's `model.ToolCallingChatModel` and Tool interfaces.
-Eino-ext concrete connectors MUST be constructed only inside `internal/provider` factories.
-Handlers, Scheduler, Runtime, and Tool packages MUST NOT retain, inspect, or construct
-Eino-ext concrete types.
+Runtime code MUST depend on OryxOS-owned `internal/llm` types and `llm.ChatModel`.
+The model port MUST preserve messages, Tool definitions, Tool calls, usage, finish reason,
+complete-response generation, and Provider-level response streaming without importing Eino.
+Eino core and Eino-ext MUST be used only inside `internal/provider` adapters and factories.
+Handlers, Scheduler, Runtime, and Tool packages MUST NOT retain, inspect, or construct any
+Eino type.
 
 DeepSeek MUST use the Eino-ext DeepSeek connector. MiniMax MUST use the Eino-ext OpenAI
 connector with a factory-owned MiniMax-compatible base URL. Explicit Provider factories
 MUST encapsulate connector selection, protocol adaptation, and endpoint policy; a native
 connector's official default endpoint SHOULD be used without redundant configuration,
 while compatibility adapters MUST set the vendor endpoint internally. Users MUST NOT
-configure or override those endpoints. Core HTTP APIs MUST remain
-synchronous JSON; connector streaming support MUST NOT be presented as core SSE support.
+configure or override those endpoints. Provider Stream MUST use the OryxOS port and MUST
+yield ordered deltas followed by one complete response and `io.EOF`, with exactly one
+terminal call record. Core HTTP APIs MUST remain synchronous JSON; Provider streaming
+support MUST NOT be presented as ReAct/CLI streaming, SSE, or WebSocket support.
 This boundary isolates vendor and connector churn from the runtime.
 
 ### IV. Providers Are Explicitly Mapped and Profile-Isolated
 
 Provider factories MUST be registered explicitly by `provider.name`. Constructed
-`ToolCallingChatModel` instances MUST be stored by `Profile.name`, not only by provider
+`llm.ChatModel` instances MUST be stored by `Profile.name`, not only by provider
 name. Process-level startup configuration MUST declare each available provider's API key
 and MUST NOT expose a Provider endpoint. A Profile MUST select only provider name, model,
 and temperature. The two layers MUST be merged before constructing an instance for each valid Profile. Two
@@ -168,7 +171,10 @@ CLI, Web Service, and AgentScheduler MUST translate input to `AgentRequest` and 
 same `AgentService.Invoke` path. None may bypass Profile loading, Session management,
 Memory, ReAct, Tool validation, or call recording.
 
-The core runtime MUST use synchronous request/response semantics and serial Tool execution.
+The core Agent runtime and all entry points MUST use synchronous request/response semantics
+and serial Tool execution. A pull-based Stream capability MAY exist at the Provider port for
+connector compatibility and future consumers, but this alone MUST NOT change AgentService,
+CLI, Web, or Scheduler behavior.
 `context.Context` MUST propagate through CLI, Web, Scheduler, LLM, MCP, and Tool calls.
 SSE, WebSocket, parallel Tool execution, and complex asynchronous orchestration MUST remain
 outside the core stage.
@@ -189,7 +195,8 @@ The dependency direction MUST remain:
 
 ```text
 cmd -> app -> handler/channel/scheduler -> service/runtime
-runtime -> Eino core interfaces + internal domain ports
+runtime -> OryxOS internal domain ports
+provider -> Eino core/Eino-ext connectors
 provider/tool-mcp/store -> concrete external libraries
 ```
 
@@ -358,4 +365,4 @@ check. Deviations MUST be documented and explicitly approved; silent exceptions 
 prohibited. `AGENTS.md` provides operational implementation guidance, while
 `docs/TechnicalSolution.md` provides architecture details.
 
-**Version**: 3.0.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-09-15
+**Version**: 4.0.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-09-17

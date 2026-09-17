@@ -98,7 +98,7 @@ provider/tool-mcp/store → concrete external libraries
 
 ### 原则二：OryxOS 自有端口是运行时边界，Eino 只在 Provider 层
 
-运行时最终调用 OryxOS 自有的 `llm.ChatModel`，并使用 OryxOS `Message`、`ToolDefinition`、`ToolCall` 和 `Usage`。Provider 适配层用 Eino core `model.ToolCallingChatModel` 和 Eino-ext connector 实现该端口。Eino core/Eino-ext 不得成为 Handler、Scheduler、Tool 或 Runtime 的接口。
+运行时最终调用 OryxOS 自有的 `llm.ChatModel`，并使用 OryxOS `Message`、`ToolDefinition`、`ToolCall`、`Usage` 和 `ResponseStream`。`ChatModel` 在 Provider 边界同时提供 `Generate` 与 `Stream`；Provider 适配层用 Eino core `model.ToolCallingChatModel` 和 Eino-ext connector 实现该端口。Eino core/Eino-ext 不得成为 Handler、Scheduler、Tool 或 Runtime 的接口。
 
 ```text
 ReActLoop → llm.ChatModel
@@ -109,7 +109,8 @@ ProviderAdapter → Eino core/Eino-ext connector → Provider API
 - MiniMax 使用 Eino-ext OpenAI connector，并由 `minimax` 工厂固定配置 MiniMax 官方 OpenAI 兼容 base URL。
 - 不得使用 Eino ADK 自动执行 Tool；Tool 调度只能由 `ReActLoop + ToolExecutor` 完成。
 - 只有 `internal/provider` 可导入 Eino core/Eino-ext；上层不得保存或判断 Eino 类型。
-- 核心 Web API 只做同步 JSON；connector 的 Stream 回归不等于交付 SSE。
+- Stream 使用 OryxOS 拉取式窄端口，正常序列为 delta→唯一 completed 完整响应→`io.EOF`；每个逻辑流只写一条 `llm_calls`。
+- 核心 Web API 只做同步 JSON；Provider Stream 不等于交付 ReAct/CLI 流式链路、SSE 或 WebSocket。
 
 ### 原则三：Provider 工厂按厂商映射，模型实例按 Profile 隔离
 
@@ -250,8 +251,8 @@ identity:
 
 provider:
   name: deepseek
-  model: deepseek-chat
-  temperature: 0.7
+  model: deepseek-flash
+  temperature: 0.3
 
 tools:
   - read_file

@@ -141,6 +141,20 @@ description: "Implementation tasks for lesson 16 LLM Provider integration"
 
 ---
 
+## Phase 8: Provider Stream Amendment
+
+**Purpose**: Add a transport-neutral OryxOS Stream port and exactly-once terminal audit while keeping ReAct, CLI, and Web/SSE outside lesson 16.
+
+- [x] T037 Add failing `llm.ChatModel.Stream` and Eino adapter tests for ordered deltas, fragmented Tool-call concatenation, one completed response followed by `io.EOF`, empty streams, receive failures, and idempotent close in `internal/llm/model.go` and `internal/provider/eino_adapter_test.go`
+- [x] T038 Add failing `ProviderService.ChatStream` tests for shared validation, successful terminal audit, initialization/receive/premature-close failures, persistence errors, cancellation-detached audit, and exactly-once behavior in `internal/provider/provider_service_test.go` and test fakes in `internal/provider/provider_test.go`
+- [x] T039 Implement the OryxOS Stream domain contract and Eino Stream adapter without exposing Eino types or introducing goroutines/channels in `internal/llm/model.go` and `internal/provider/eino_adapter.go`
+- [x] T040 Implement `ProviderService.ChatStream` and its terminal audit wrapper, reusing Chat validation and persistence rules, in `internal/provider/service.go` and `internal/provider/stream.go`
+- [x] T041 Extend the tagged DeepSeek/MiniMax smoke harness with Stream completion and one-row-per-logical-call checks in `internal/provider/provider_smoke_test.go`
+- [x] T042 Synchronize Stream boundaries and extension guidance across `docs/TechnicalSolution.md`, `AGENTS.md`, `docs/development/provider-development.md`, `docs/testing/provider-manual-testing.md`, the lesson-16 courseware, and Spec-Kit artifacts
+- [x] T043 Run `gofmt` on changed Go files, targeted Provider tests, `go test ./...`, `go vet ./...`, `CGO_ENABLED=0 go build ./cmd/oryxos`, the credential-free tagged smoke harness, and the Eino-import architecture check
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase dependencies
@@ -151,6 +165,7 @@ description: "Implementation tasks for lesson 16 LLM Provider integration"
 - **User Story 2**: Depends on User Story 1's Profile and registry contracts. Its three failing-test tasks can run in parallel before loader/template implementation.
 - **User Story 3**: Depends on User Story 1's service and recorder seam, but not on User Story 2's filesystem loader; it may proceed in parallel with User Story 2 after User Story 1.
 - **Polish**: Depends on all selected user stories. T027 and T028 can run in parallel before the final sequential gates T029-T030.
+- **Provider Stream amendment**: Depends on the OryxOS-owned boundary amendment. T037-T038 define failing contracts, T039-T040 implement them, T041-T042 complete integration/docs, and T043 runs final gates.
 
 ### User story dependency graph
 
@@ -223,7 +238,7 @@ Task T022: Define audit-ordering failures in internal/provider/provider_service_
 
 ### Scope controls
 
-- Do not implement ReAct iteration, Tool execution, Stream/SSE, fallback, retry, circuit breakers, or cost dashboards.
+- Do not implement ReAct iteration, Tool execution, ReAct/CLI streaming, SSE/WebSocket, fallback, retry, circuit breakers, or cost dashboards. Provider-level Stream is explicitly in scope.
 - Do not add a config file to `.oryxos init`, a CLI leaf command, REST endpoint, or database table.
 - Do not expose any Eino core or Eino-ext type outside `internal/provider`.
 - Do not run live Provider tests in default CI or persist real credentials.

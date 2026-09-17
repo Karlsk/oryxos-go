@@ -124,9 +124,11 @@ A file can become `registered` or `skipped_with_diagnostic`. A skipped file does
 
 ```text
 started
-  -> connector_success | connector_failure
+  -> generate_success | generate_failure
+  -> stream_started
+       -> stream_completed | stream_receive_failure | stream_early_close
   -> audit_insert_success | audit_insert_failure
   -> result returned only after audit attempt
 ```
 
-Every connector invocation causes exactly one audit insert attempt. Tool-call intentions remain fields on the returned assistant message and have no execution transition in this feature.
+Every logical Generate or Stream invocation causes exactly one audit insert attempt. Stream deltas do not create rows; only its terminal outcome does. A completed stream records usage from the merged terminal response, while failed or prematurely closed streams use zero for unavailable usage. Tool-call intentions remain fields on the returned assistant message and have no execution transition in this feature.

@@ -175,6 +175,7 @@ OryxOS 窄端口覆盖核心阶段必需语义：
 ```go
 type ChatModel interface {
 	Generate(ctx context.Context, request Request) (Response, error)
+	Stream(ctx context.Context, request Request) (ResponseStream, error)
 }
 
 type Request struct {
@@ -187,9 +188,14 @@ type Response struct {
 	Usage        Usage
 	FinishReason string
 }
+
+type ResponseStream interface {
+	Recv() (StreamEvent, error)
+	Close() error
+}
 ```
 
-`Message` 必须保留 role、content、name、reasoning content、assistant tool calls 以及 Tool message 的 `tool_call_id/tool_name`；`ToolCall` 必须保留 ID、type、function name 和原始 JSON arguments；`ToolDefinition` 用标准 JSON Schema 表达参数。这些类型不包含 Eino 导入。
+`Message` 必须保留 role、content、name、reasoning content、assistant tool calls 以及 Tool message 的 `tool_call_id/tool_name`；`ToolCall` 必须保留 ID、type、function name 和原始 JSON arguments；`ToolDefinition` 用标准 JSON Schema 表达参数。`ResponseStream` 是单消费者的拉取端口：先按顺序返回 delta，再返回唯一 completed 事件及完整 `Response`，之后返回 `io.EOF`；`Close` 在 OryxOS 边界幂等。这些类型都不包含 Eino 导入。
 
 ### 3.2 两层配置模型
 
@@ -284,8 +290,9 @@ ProfileLoader -> 校验 Profile.name 唯一
 
 - **DeepSeek**：使用 Eino-ext DeepSeek connector，不传 `BaseURL`，沿用 connector 的官方默认地址，工厂将 connector 包装为 OryxOS `llm.ChatModel`。
 - **MiniMax**：使用 Eino-ext OpenAI connector，工厂固定配置 MiniMax 官方 OpenAI 兼容 API 地址；用户只提供 API key，模型名和 temperature 仍由 Profile 选择。
-- 两条路径都要验证 Function Calling、多轮 Tool 消息累积、错误归一化和 token 记录。
-- Web 核心接口只做同步响应；connector 的 Stream 能力作为兼容性回归项，不等于核心阶段提供 SSE。
+- 两条路径都要验证 Function Calling、多轮 Tool 消息累积、Generate/Stream、错误归一化和 token 记录。
+- Provider adapter 将 Eino Stream 的每个 chunk 转换为 OryxOS delta，并在上游 EOF 时用 connector 支持的拼接语义生成唯一完整 `llm.Response`。Eino reader 不得离开 `internal/provider`。
+- Web 核心接口只做同步 JSON 响应；Provider Stream 是模型端口能力，不等于核心阶段提供 ReAct 流式链路、SSE 或 WebSocket。
 
 只允许在 Provider 适配层使用的导入：
 
@@ -303,7 +310,7 @@ import (
 
 Provider 适配层统一返回可判别错误类别：配置错误、认证错误、限流、超时、上游服务错误、响应格式错误。核心阶段不自动切换 Provider；错误返回 Agent 或调用方。
 
-每次模型调用尝试无论成功或失败都记录结构化日志并写 `llm_calls`，至少包含 Session、Provider、模型、token、成功状态、失败原因和耗时。失败或 connector 无法提供准确 token 时，token 字段允许为 0；失败记录写 `success=false` 和脱敏后的 `error_message`，结构化日志同时写错误类别与 `usage_available=false`。
+每次逻辑模型调用无论成功或失败都恰好记录一条结构化日志并写一条 `llm_calls`，至少包含 Session、Provider、模型、token、成功状态、失败原因和耗时。Stream 收到 completed 完整响应时记成功；初始化失败、中途读失败、提前 EOF 或未完成就关闭时记失败；每个 delta 不单独落账。失败或 connector 无法提供准确 token 时，token 字段允许为 0；失败记录写 `success=false` 和脱敏后的 `error_message`，结构化日志同时写错误类别与 `usage_available=false`。
 
 ---
 
@@ -596,8 +603,8 @@ identity:
 
 provider:
   name: deepseek
-  model: deepseek-chat
-  temperature: 0.7
+  model: deepseek-flash
+  temperature: 0.3
 
 tools:
   - read_file

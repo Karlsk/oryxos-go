@@ -19,6 +19,22 @@ type ToolSchemaResolver interface {
 
 Eino core and Eino-ext imports are confined to adapters and factory construction in `internal/provider`. Runtime and Tool packages use only `internal/llm`.
 
+The OryxOS model port exposes both complete and incremental calls:
+
+```go
+type ChatModel interface {
+	Generate(context.Context, Request) (Response, error)
+	Stream(context.Context, Request) (ResponseStream, error)
+}
+
+type ResponseStream interface {
+	Recv() (StreamEvent, error)
+	Close() error
+}
+```
+
+`Recv` yields zero or more delta events, exactly one completed event containing the full merged `Response`, and then `io.EOF`. Receive failures are returned as errors, not encoded as events. The stream is single-consumer and `Close` is idempotent.
+
 ## Factory registration
 
 ```go
@@ -89,4 +105,26 @@ Failure behavior:
 - Audit insertion failure is returned explicitly and is never hidden by an otherwise successful Provider response.
 - Cancellation and deadlines flow through the caller's context.
 
-Non-goals: Tool execution, ReAct iteration, streaming API exposure, fallback, retry, circuit breaking, cost reporting, and any Eino type outside `internal/provider`.
+## `ProviderService.ChatStream`
+
+```go
+func (service *ProviderService) ChatStream(
+	ctx context.Context,
+	sessionID string,
+	profile *profile.Profile,
+	messages []llm.Message,
+) (llm.ResponseStream, error)
+```
+
+It shares Chat's validation, Profile lookup, ordered Tool metadata resolution, and no-execution rule. The Eino adapter calls connector `Stream` once, converts each chunk to an OryxOS delta, merges all chunks through `schema.ConcatMessages`, returns one completed event, and then returns `io.EOF`.
+
+The service wrapper persists exactly once before exposing a terminal outcome:
+
+- completed response: one successful row using terminal usage;
+- initialization or receive failure, premature EOF, or close before completion: one failed row with a sanitized reason;
+- close after completion/failure and repeated close: no additional row;
+- audit insertion failure: return that failure instead of reporting the terminal outcome as fully handled.
+
+The audit insert uses `context.WithoutCancel` so a cancellation that ends a connector stream cannot prevent its required call record.
+
+Non-goals: Tool execution, ReAct iteration, ReAct/CLI streaming, SSE/WebSocket transport, fallback, retry, circuit breaking, cost reporting, and any Eino type outside `internal/provider`.

@@ -16,7 +16,7 @@
 
 **Local API verification**:
 
-- Eino core `v0.9.19` defines `model.ToolCallingChatModel.WithTools([]*schema.ToolInfo)` and `Generate(context.Context, []*schema.Message, ...model.Option)` through its backward-compatible `BaseChatModel` alias.
+- Eino core `v0.9.19` defines `model.ToolCallingChatModel.WithTools([]*schema.ToolInfo)`, `Generate(context.Context, []*schema.Message, ...model.Option)`, and `Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error)` through its backward-compatible `BaseChatModel` alias. `StreamReader.Recv` is pull-based, `Close` has no return value, and `schema.ConcatMessages` is the supported helper for merging streamed messages and fragmented Tool calls.
 - DeepSeek `v0.1.7` exposes `deepseek.NewChatModel(context.Context, *deepseek.ChatModelConfig)`; `Temperature` is `float32`.
 - OpenAI `v0.1.13` exposes `openai.NewChatModel(context.Context, *openai.ChatModelConfig)`; `BaseURL` is a string and `Temperature` is `*float32`.
 - Both constructors return concrete models implementing `model.ToolCallingChatModel` and both connectors expose immutable `WithTools` binding.
@@ -55,7 +55,7 @@ Both connector modules declare Eino `v0.7.13` as their minimum. A local source d
 
 ## Decision 3: Own the runtime port and isolate Eino in Provider
 
-**Decision**: Define `ChatModel`, `Request`, `Response`, `Message`, `ToolDefinition`, `ToolCall`, and `Usage` in `internal/llm`. The core-stage message contract preserves text roles, names, reasoning content, complete assistant Tool calls, Tool-result correlation IDs, JSON arguments, JSON Schema, token usage, and finish reason. An adapter in `internal/provider` performs all Eino conversions.
+**Decision**: Define `ChatModel`, `Request`, `Response`, `Message`, `ToolDefinition`, `ToolCall`, `Usage`, `ResponseStream`, and `StreamEvent` in `internal/llm`. The core-stage message contract preserves text roles, names, reasoning content, complete assistant Tool calls, Tool-result correlation IDs, JSON arguments, JSON Schema, token usage, and finish reason. `Generate` returns one complete response. `Stream` returns ordered delta events, then one completed event containing the merged response, then `io.EOF`; receive failures remain errors and `Close` is idempotent. An adapter in `internal/provider` performs all Eino conversions.
 
 **Rationale**: Eino remains valuable for connector protocol maintenance, but its 0.x API and broad schema types should not determine Runtime, Tool, Handler, or Scheduler contracts. The narrow port makes those packages independently testable and confines a future connector replacement to Provider.
 
@@ -82,7 +82,7 @@ For each valid Profile, merge its choice with the declared connection and call t
 
 ## Decision 5: Bind Tool schemas without executing Tools
 
-**Decision**: `ProviderService` resolves ordered Profile Tool names to OryxOS `[]llm.ToolDefinition` and calls an OryxOS `llm.ChatModel`. The Provider-internal Eino adapter converts definitions to `[]*schema.ToolInfo`, calls `WithTools` only when definitions are present, invokes `Generate`, and converts the complete response back to `llm.Response`.
+**Decision**: `ProviderService` resolves ordered Profile Tool names to OryxOS `[]llm.ToolDefinition` and calls an OryxOS `llm.ChatModel`. The Provider-internal Eino adapter converts definitions to `[]*schema.ToolInfo`, calls `WithTools` only when definitions are present, invokes either `Generate` or `Stream`, and converts all connector output back to OryxOS types. The Stream adapter accumulates Eino chunks and uses `schema.ConcatMessages` to construct the one complete terminal response without exposing Eino readers above `internal/provider`.
 
 **Rationale**: This supplies Function Calling metadata while keeping execution authority in the future `ReActLoop + ToolExecutor`. Lesson 20's `ToolRegistry` can provide OryxOS metadata without importing Eino, and connector replacement affects only `internal/provider`.
 
@@ -94,7 +94,7 @@ For each valid Profile, merge its choice with the declared connection and call t
 
 ## Decision 6: Persist exactly one audit record for every call attempt
 
-**Decision**: `ProviderService.Chat` measures the connector call, extracts available usage, sanitizes any failure, and asks `LlmCallRepository` to insert one record before returning. Missing usage becomes zero. A connector failure is returned only after its failed audit row is stored. A persistence failure is never swallowed and prevents a successful result from being reported as fully handled.
+**Decision**: `ProviderService.Chat` measures the connector call, extracts available usage, sanitizes any failure, and asks `LlmCallRepository` to insert one record before returning. `ProviderService.ChatStream` returns an audited wrapper that inserts once at the terminal state: completed response is success; initialization failure, receive failure, premature EOF, or early close is failure. Missing usage becomes zero. A connector failure is returned only after its failed audit row is stored. A persistence failure is never swallowed and prevents a successful terminal result from being reported as fully handled.
 
 **Rationale**: Success-only logging omits the incidents that most need investigation. One repository call per logical model attempt gives a testable exactly-once boundary.
 
@@ -110,6 +110,18 @@ For each valid Profile, merge its choice with the declared connection and call t
 - Log only: rejected because call records are a Day One requirement.
 - Insert before calling the model and update later: rejected because it creates partial state and a second write path.
 - Wrap the external model call in a database transaction: rejected because external latency must not hold SQLite locks.
+
+## Decision 9: Keep Provider Stream pull-based and transport-neutral
+
+**Decision**: Implement Stream as a synchronous pull API with `Recv` and `Close`, not a goroutine/channel producer. Only the Provider port and adapters gain Stream in lesson 16. ReAct, CLI, Gin, SSE, and WebSocket remain unchanged.
+
+**Rationale**: This mirrors the connector's backpressure and cancellation model, avoids goroutine leaks, and gives later runtimes a stable OryxOS boundary without committing the core Web API to a streaming transport.
+
+**Alternatives considered**:
+
+- Return Eino `StreamReader` directly: rejected because it leaks Eino into Runtime and consumers.
+- Expose a Go channel: rejected because it needs producer lifecycle and buffering policy that the connector already handles through pull-based reads.
+- Add SSE now: rejected because the core API contract remains synchronous JSON and Provider compatibility is separate from transport delivery.
 
 ## Decision 7: Use hand-maintained idempotent SQL
 

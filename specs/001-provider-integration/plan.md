@@ -6,7 +6,7 @@
 
 ## Summary
 
-Deliver lesson 16 as a thin, synchronous Provider implementation of the OryxOS-owned `llm.ChatModel` port. Process configuration declares DeepSeek and MiniMax names plus environment-backed API keys; credential-free Profiles select Provider/model/temperature. Explicit Eino-ext factories are keyed by Provider name and own endpoint policy: DeepSeek relies on its native connector's official default, while MiniMax fixes its OpenAI-compatible endpoint internally. Each Eino connector is wrapped by an adapter and independently constructed `llm.ChatModel` instances are keyed by Profile name. `ProviderService.Chat` passes OryxOS Tool definitions, makes exactly one model call, preserves assistant Tool calls, and persists one success or failure `llm_calls` record before returning.
+Deliver lesson 16 as a thin Provider implementation of the OryxOS-owned `llm.ChatModel` port with complete-response `Generate` and incremental `Stream` calls. Process configuration declares DeepSeek and MiniMax names plus environment-backed API keys; credential-free Profiles select Provider/model/temperature. Explicit Eino-ext factories are keyed by Provider name and own endpoint policy: DeepSeek relies on its native connector's official default, while MiniMax fixes its OpenAI-compatible endpoint internally. Each Eino connector is wrapped by an adapter and independently constructed `llm.ChatModel` instances are keyed by Profile name. `ProviderService.Chat` and `ChatStream` pass OryxOS Tool definitions, preserve assistant Tool calls, and persist exactly one terminal success or failure `llm_calls` record per logical call. ReAct, CLI, and Web remain synchronous consumers in this lesson; Provider Stream does not add SSE.
 
 ## Technical Context
 
@@ -24,7 +24,7 @@ Deliver lesson 16 as a thin, synchronous Provider implementation of the OryxOS-o
 
 **Performance Goals**: Provider wrapper adds only one registry lookup, one schema conversion, timing/usage extraction, and one short audit insert around each external model call; no database transaction spans network I/O
 
-**Constraints**: Exactly DeepSeek + MiniMax; MiniMax uses OpenAI compatibility; Provider endpoints are factory-owned and not user-configurable; synchronous calls; no Eino ADK; no automatic Tool execution; no fallback/retry/streaming API; secrets redacted; bad Profiles isolated; invalid process Provider declarations fail; no `AutoMigrate`; no fourth business table
+**Constraints**: Exactly DeepSeek + MiniMax; MiniMax uses OpenAI compatibility; Provider endpoints are factory-owned and not user-configurable; OryxOS-owned Generate/Stream port; no Eino ADK; no automatic Tool execution; no fallback/retry; no ReAct/CLI/Web streaming or SSE; secrets redacted; bad Profiles isolated; invalid process Provider declarations fail; no `AutoMigrate`; no fourth business table
 
 **Scale/Scope**: One startup snapshot containing multiple Profiles, including multiple isolated instances of the same Provider; four required unit-test files plus one tagged smoke-test file; one audit table
 
@@ -43,7 +43,7 @@ Deliver lesson 16 as a thin, synchronous Provider implementation of the OryxOS-o
 | Security and pure-Go binary | PASS | Environment-backed credentials, sanitization, `glebarez/sqlite`, and the CGO-disabled build gate are explicit. |
 | Fixed scope and counts | PASS | Exactly two Providers and one of the already-approved three business tables; no new endpoint, CLI leaf, Demo, or workspace artifact. |
 | Repository-maintained migrations | PASS | `llm_calls` is created by hand-maintained idempotent SQL; `AutoMigrate` is prohibited and tested. |
-| Synchronous shared runtime direction | PASS | `context.Context` propagates through schema resolution, model call, and persistence; no asynchronous path is added. |
+| Synchronous core transports with a streaming-capable Provider port | PASS | `context.Context` propagates through schema resolution, model call, Stream receive/close, and persistence; no goroutine, channel, ReAct streaming, or SSE path is added. |
 
 Post-design review also passes: [data-model.md](./data-model.md) adds no forbidden data category, [provider-service.md](./contracts/provider-service.md) preserves the OryxOS/Eino adapter boundary, and [llm_calls.sql](./contracts/llm_calls.sql) preserves the three-table contract.
 
@@ -91,8 +91,9 @@ internal/
 │   ├── config.go                        # merged ProviderConfig
 │   ├── factory.go                       # DeepSeek and MiniMax/OpenAI-compatible factories
 │   ├── registry.go                      # factories by Provider, models by Profile
-│   ├── service.go                       # synchronous Chat and audit-before-return
-│   ├── eino_adapter.go                  # OryxOS/Eino request-response conversion
+│   ├── service.go                       # Chat plus shared validation/audit helpers
+│   ├── stream.go                        # ChatStream and terminal audit wrapper
+│   ├── eino_adapter.go                  # OryxOS/Eino Generate/Stream conversion
 │   ├── provider_service_test.go
 │   ├── eino_adapter_test.go
 │   └── provider_smoke_test.go            # integration build tag
@@ -111,7 +112,7 @@ internal/
 
 ### Phase 0: Dependency and behavior research
 
-Completed in [research.md](./research.md): resolve latest stable versions, inspect their local source APIs, verify Eino interface compatibility, decide the two-layer configuration boundary, define isolated registry ownership, define no-execution Tool schema binding, and choose the exactly-once audit behavior.
+Completed in [research.md](./research.md): resolve latest stable versions, inspect their local source APIs including `StreamReader` and message concatenation, verify Eino interface compatibility, decide the two-layer configuration boundary, define isolated registry ownership, define no-execution Tool schema binding, and choose exactly-once terminal audit behavior for Generate and Stream.
 
 ### Phase 1: Contracts and data design
 
@@ -137,14 +138,16 @@ Generate `tasks.md` with test-first ordering. Each behavioral group starts with 
 6. Make the model call outside database transactions. Build the audit record after the call and perform one short insert before returning.
 7. Keep the SQL migration embedded or otherwise repository-owned and run the same script in tests and production. Do not use `AutoMigrate`.
 8. Update the existing default Profile template as the user-approved migration: remove legacy `api_key` and `base_url`, retain `name/model/temperature`, and do not alter the five-directory/six-file count. Process Provider declarations accept only `name/api_key`; the DeepSeek factory uses the native endpoint default and the MiniMax factory fixes its compatibility endpoint.
+9. Define `llm.ResponseStream` as a pull-based, single-consumer port. `Recv` yields ordered delta events, then one completed event containing a merged `llm.Response`, then `io.EOF`; errors stay on the error channel and `Close` is idempotent. The Provider adapter accumulates Eino chunks and uses Eino's supported message concatenation helper only inside `internal/provider`.
+10. Audit a Stream once at its terminal state. A completed response is success; initialization failure, receive failure, premature EOF, or early close is failure. Audit persistence uses a cancellation-detached context exactly as the existing synchronous path does, and the terminal result is not exposed before its audit insert attempt.
 
 ## Verification Strategy
 
 ### Default harness
 
 - `profile_loader_test.go`: full structural parsing, strict unknown fields, missing/undeclared Provider, invalid file isolation, deterministic duplicate handling, and process credential expansion/redaction.
-- `provider_service_test.go`: DeepSeek/MiniMax factory selection, same-vendor Profile isolation, one OryxOS Generate call, response/Tool-call preservation, success/failure audit, usage fallback to zero, persistence failure, and context cancellation.
-- `eino_adapter_test.go`: ordered Tool-definition conversion, four message roles, Tool-call/result identity, usage/finish reason preservation, invalid schema errors, and zero Tool executions.
+- `provider_service_test.go`: DeepSeek/MiniMax factory selection, same-vendor Profile isolation, one OryxOS Generate or Stream call, response/Tool-call preservation, exactly-once terminal audit, early close, usage fallback to zero, persistence failure, and context cancellation.
+- `eino_adapter_test.go`: ordered Tool-definition conversion, four message roles, Tool-call/result identity, usage/finish reason preservation, Stream delta order and complete-response concatenation, invalid schema/empty-stream errors, idempotent close, and zero Tool executions.
 - `llm_call_repository_test.go`: execute the hand SQL, inspect columns/index, write/read success and failure rows, reject invalid required fields, and confirm no `AutoMigrate` dependency.
 - existing workspace/config/application tests: protect foundation behavior and the credential-free Profile template.
 
@@ -152,7 +155,7 @@ Generate `tasks.md` with test-first ordering. Each behavioral group starts with 
 
 - `provider_smoke_test.go` has `//go:build integration`.
 - DeepSeek and MiniMax are separate subtests and read only environment-backed credentials.
-- Each subtest requires a non-empty response and an audit row; Tool Calling fixtures preserve call IDs and do not execute Tools.
+- Each subtest exercises Generate and Stream, requires non-empty responses and one audit row per logical call; Tool Calling fixtures preserve call IDs and do not execute Tools.
 - Missing credentials skip; supplied-but-invalid credentials fail and leave a sanitized failure audit row.
 
 ### Delivery gates

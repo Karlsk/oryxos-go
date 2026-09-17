@@ -56,6 +56,23 @@ As an auditor, I can determine which Provider and model a Session called, how ma
 2. **Given** a timeout, rate limit, authentication error, or upstream failure, **When** the call returns an error, **Then** one Session-linked record already contains a failed outcome and a redacted reason.
 3. **Given** a request includes descriptions of available Tools, **When** the model returns an intention to call a Tool, **Then** the intention is returned unchanged to the caller and no Tool is executed by the Provider feature.
 
+---
+
+### User Story 4 - Provider Calls Can Be Consumed Incrementally (Priority: P2)
+
+As an OryxOS runtime developer, I can consume DeepSeek and MiniMax responses incrementally through an OryxOS-owned Stream contract, while still receiving one complete terminal response for Tool Calling and audit.
+
+**Why this priority**: An Agent OS needs a streaming-capable model boundary, but exposing connector types or prematurely adding SSE would couple later runtime and transport work to one implementation.
+
+**Independent Test**: Stream controlled connector chunks containing text and fragmented Tool calls, verify ordered OryxOS delta events followed by exactly one complete response and `io.EOF`, then repeat initialization failure, receive failure, and early close cases and verify exactly one terminal audit record.
+
+**Acceptance Scenarios**:
+
+1. **Given** a Provider emits multiple chunks, **When** a caller consumes the OryxOS response stream, **Then** it receives the chunks in order, one complete merged `llm.Response`, and then `io.EOF`.
+2. **Given** a stream completes with a Tool call split across chunks, **When** the terminal response is produced, **Then** Tool-call IDs and arguments are complete and no Tool is executed.
+3. **Given** stream initialization fails, receiving fails, or the caller closes before completion, **When** the terminal outcome is returned, **Then** exactly one failed, redacted `llm_calls` record already exists.
+4. **Given** a stream reaches its complete response, **When** the terminal response is returned, **Then** exactly one successful `llm_calls` record already exists and a later `Close` does not create another record.
+
 ### Edge Cases
 
 - Two Profile files declare the same Profile name; the duplicate must not silently overwrite the first valid registration.
@@ -64,6 +81,9 @@ As an auditor, I can determine which Provider and model a Session called, how ma
 - A failed call provides no token usage; the audit record uses zero token counts while preserving the failed outcome.
 - A failure message contains credential-like or URL-secret material; persisted and returned messages are redacted.
 - A request has no Tool descriptions; the selected model is still called once without enabling automatic Tool execution.
+- A connector stream ends before producing any response chunk; the Provider returns a failure and records one failed call rather than fabricating a successful empty response.
+- A caller closes a stream before its terminal response; the close is idempotent, closes the connector reader once, and records one failed logical call.
+- A caller closes after completion or calls `Recv` again; no duplicate audit is written and the next receive returns `io.EOF`.
 
 ## Requirements *(mandatory)*
 
@@ -75,13 +95,14 @@ As an auditor, I can determine which Provider and model a Session called, how ma
 - **FR-004**: OryxOS MUST combine a valid Profile choice with its matching instance-level Provider declaration and keep the resulting model configuration isolated by Profile.
 - **FR-005**: OryxOS MUST reject an undeclared or unsupported Provider reference explicitly and MUST NOT silently choose a fallback.
 - **FR-006**: A malformed Profile MUST be reported and skipped without preventing other valid Profiles from loading; an invalid instance-level Provider declaration MUST prevent startup.
-- **FR-007**: For one model call, OryxOS MUST accept a Session identifier, Profile, conversation messages, and optional Tool descriptions, then return the model response unchanged to its caller.
+- **FR-007**: For one model call, OryxOS MUST accept a Session identifier, Profile, conversation messages, and optional Tool descriptions, then support both a complete response and an incremental response stream through OryxOS-owned types.
 - **FR-008**: The Provider feature MUST translate Tool descriptions and return model Tool-call intentions but MUST NOT execute any Tool or delegate execution to an automatic Agent loop.
-- **FR-009**: Every successful or failed model call attempt MUST create exactly one durable, Session-linked record containing Provider, model, prompt tokens, completion tokens, total tokens, duration, success status, and an optional redacted error reason.
+- **FR-009**: Every successful or failed logical model call MUST create exactly one durable, Session-linked record containing Provider, model, prompt tokens, completion tokens, total tokens, duration, success status, and an optional redacted error reason. A stream is successful only after its complete terminal response; initialization failure, receive failure, or early close is failed.
 - **FR-010**: If accurate token usage is unavailable, OryxOS MUST record zero for the unavailable counts rather than omit the call record.
 - **FR-011**: Provider credentials MUST come from environment-backed startup configuration and MUST NOT appear in Profile files, source code, logs, persisted error reasons, or returned errors. Connector selection, protocol adaptation, and endpoint policy MUST be encapsulated by the explicit DeepSeek and MiniMax factories; native connector defaults MAY be used when they already represent the official endpoint.
 - **FR-012**: Provider failures MUST be returned to the caller without fallback, hedge racing, circuit breaking, or automatic retry by this feature.
-- **FR-013**: Streaming responses, model-cost dashboards, ReAct iteration, and actual Tool execution MUST remain outside this feature.
+- **FR-013**: Model-cost dashboards, ReAct iteration, actual Tool execution, ReAct/CLI streaming, and Web SSE/WebSocket transport MUST remain outside this feature.
+- **FR-014**: `llm.ChatModel.Stream` MUST return ordered delta events followed by exactly one complete merged `llm.Response` and then `io.EOF`; connector stream types MUST remain inside `internal/provider`, receive errors MUST be returned as errors rather than data events, and `Close` MUST be idempotent at the OryxOS boundary.
 
 ### Key Entities
 
@@ -90,6 +111,7 @@ As an auditor, I can determine which Provider and model a Session called, how ma
 - **Profile Model Binding**: The isolated association between one Profile and the model configuration produced from the two configuration layers.
 - **Model Call Record**: A Session-linked audit entry describing Provider, model, token usage, duration, success status, and an optional redacted failure reason.
 - **Tool Description**: Metadata supplied to a model to describe an available capability; it is not executable behavior in this feature.
+- **Response Stream**: A single-consumer OryxOS port that yields ordered deltas and one complete terminal response while hiding connector-specific reader types.
 
 ## Success Criteria *(mandatory)*
 
@@ -101,6 +123,7 @@ As an auditor, I can determine which Provider and model a Session called, how ma
 - **SC-004**: In all Tool-description scenarios, the Provider feature performs zero Tool executions while preserving every returned Tool-call intention.
 - **SC-005**: Static and runtime checks find zero plaintext Provider credentials in Profiles, source files, logs, persisted error reasons, or returned errors.
 - **SC-006**: An operator can switch a Profile between the two declared Providers or models using configuration and restart alone, with no application code change.
+- **SC-007**: Deterministic DeepSeek and MiniMax adapter tests preserve 100% of streamed event order and Tool-call identity, end with one complete response plus `io.EOF`, and produce exactly one terminal audit outcome for success, failure, or early close.
 
 ## Assumptions
 

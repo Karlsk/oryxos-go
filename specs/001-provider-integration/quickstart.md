@@ -53,7 +53,8 @@ The default test run must cover:
 - DeepSeek/MiniMax factory routing and two same-vendor Profiles with isolated settings;
 - OryxOS Tool-definition conversion to Eino `WithTools` binding without Tool execution;
 - OryxOS/Eino conversion of all text message roles, Tool-call/result IDs, JSON Schema, usage, and finish reason;
-- successful and failed model calls, zero-value unavailable usage, and audit-before-return behavior;
+- Stream delta order, fragmented Tool-call concatenation, one completed response followed by `io.EOF`, idempotent close, and empty/failed stream handling;
+- successful and failed Generate/Stream calls, zero-value unavailable usage, exactly-one terminal audit, and audit-before-return behavior;
 - execution of the hand-maintained SQL contract against temporary pure-Go SQLite;
 - the credential-free `profiles/default.yaml` template.
 
@@ -86,12 +87,12 @@ Never commit the expanded values or place them in Profile YAML.
 go test -tags=integration ./internal/provider/...
 ```
 
-The integration harness must run one DeepSeek request and one MiniMax OpenAI-compatible request. For each Provider it verifies:
+The integration harness must run Generate and Stream requests through DeepSeek and MiniMax's OpenAI-compatible path. For each Provider it verifies:
 
 - a non-empty assistant response;
 - the expected connector path;
 - preserved Tool-call information when the fixture requests Tool Calling;
-- one `llm_calls` row with `success=true`.
+- one `llm_calls` row per logical request with `success=true` and no row per individual Stream chunk.
 
 If credentials are absent, the test must skip with a clear message. If credentials are present and a Provider call fails, the test must fail and the attempted call must still leave a sanitized `success=false` audit row.
 
@@ -132,3 +133,14 @@ go test -tags=integration ./internal/provider -run TestProviderSmoke  PASS (both
 
 The architecture harness also confirms that production imports of Eino core
 and Eino-ext are confined to `internal/provider`.
+
+Run on 2026-09-17 after adding Provider Stream and setting the generated
+default Profile to `deepseek-flash` with temperature `0.3`:
+
+```text
+go test -race ./internal/provider       PASS
+go test ./...                           PASS
+go vet ./...                            PASS
+CGO_ENABLED=0 go build ./cmd/oryxos    PASS
+go test -tags=integration ./internal/provider -run '^TestProviderSmoke$'  PASS (both credentials deliberately unset; subtests skipped)
+```
