@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -52,6 +53,182 @@ func TestDefaultFactoriesUseNativeDeepSeekAndFixedMiniMaxEndpoint(t *testing.T) 
 	}
 	if reflect.TypeOf(ProviderConfig{}).NumField() != 4 {
 		t.Fatalf("ProviderConfig fields = %d, want endpoint-free four fields", reflect.TypeOf(ProviderConfig{}).NumField())
+	}
+}
+
+func TestProviderServiceChatStreamAuditsTerminalOutcomeExactlyOnce(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		response := llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}, Usage: llm.Usage{PromptTokens: 2, CompletionTokens: 3, TotalTokens: 5}}
+		upstream := &fakeResponseStream{items: []fakeResponseStreamItem{
+			{event: llm.StreamEvent{Kind: llm.StreamEventDelta, Delta: llm.Message{Role: llm.RoleAssistant, Content: "do"}}},
+			{event: llm.StreamEvent{Kind: llm.StreamEventCompleted, Response: &response}},
+			{err: io.EOF},
+		}}
+		fake, state := newFakeOryxModel(llm.Response{}, nil)
+		state.stream = upstream
+		service, recorder, selected := serviceForTest(t, fake)
+		base := time.Date(2026, 9, 17, 1, 2, 3, 0, time.UTC)
+		service.now = sequenceClock(base, base.Add(9*time.Millisecond))
+
+		stream, err := service.ChatStream(context.Background(), "session-stream", selected, nil)
+		if err != nil {
+			t.Fatalf("ChatStream() error = %v", err)
+		}
+		if event, err := stream.Recv(); err != nil || event.Kind != llm.StreamEventDelta || len(recorder.calls) != 0 {
+			t.Fatalf("delta = %#v, %v; audits = %d", event, err, len(recorder.calls))
+		}
+		completed, err := stream.Recv()
+		if err != nil || completed.Response == nil || completed.Response.Message.Content != "done" {
+			t.Fatalf("completed = %#v, %v", completed, err)
+		}
+		if len(recorder.calls) != 1 || !recorder.calls[0].Success || recorder.calls[0].TotalTokens != 5 || recorder.calls[0].DurationMS != 9 {
+			t.Fatalf("audits = %#v", recorder.calls)
+		}
+		if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+			t.Fatalf("Recv() after completed error = %v", err)
+		}
+		if err := stream.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+		if err := stream.Close(); err != nil {
+			t.Fatalf("second Close() error = %v", err)
+		}
+		if len(recorder.calls) != 1 || upstream.closeCalls != 1 || state.streamCalls != 1 || state.generateCalls != 0 {
+			t.Fatalf("audits=%d closes=%d stream=%d generate=%d", len(recorder.calls), upstream.closeCalls, state.streamCalls, state.generateCalls)
+		}
+	})
+
+	t.Run("receive_failure_is_sanitized", func(t *testing.T) {
+		const secret = "sk-stream-secret"
+		upstreamErr := errors.New("upstream rejected api key " + secret)
+		upstream := &fakeResponseStream{items: []fakeResponseStreamItem{{err: upstreamErr}}}
+		fake, state := newFakeOryxModel(llm.Response{}, nil)
+		state.stream = upstream
+		service, recorder, selected := serviceForTest(t, fake)
+		stream, err := service.ChatStream(context.Background(), "session-stream-error", selected, nil)
+		if err != nil {
+			t.Fatalf("ChatStream() error = %v", err)
+		}
+		if _, err := stream.Recv(); err == nil || strings.Contains(err.Error(), secret) {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if len(recorder.calls) != 1 || recorder.calls[0].Success || recorder.calls[0].ErrorMessage == nil || strings.Contains(*recorder.calls[0].ErrorMessage, secret) {
+			t.Fatalf("audits = %#v", recorder.calls)
+		}
+	})
+
+	t.Run("premature_eof_is_failed", func(t *testing.T) {
+		upstream := &fakeResponseStream{items: []fakeResponseStreamItem{{err: io.EOF}}}
+		fake, state := newFakeOryxModel(llm.Response{}, nil)
+		state.stream = upstream
+		service, recorder, selected := serviceForTest(t, fake)
+		stream, err := service.ChatStream(context.Background(), "session-stream-eof", selected, nil)
+		if err != nil {
+			t.Fatalf("ChatStream() error = %v", err)
+		}
+		if _, err := stream.Recv(); err == nil || errors.Is(err, io.EOF) {
+			t.Fatalf("Recv() error = %v, want premature EOF failure", err)
+		}
+		if len(recorder.calls) != 1 || recorder.calls[0].Success {
+			t.Fatalf("audits = %#v", recorder.calls)
+		}
+	})
+
+	t.Run("canceled_receive_uses_non_canceled_audit_context", func(t *testing.T) {
+		upstream := &fakeResponseStream{items: []fakeResponseStreamItem{{err: context.Canceled}}}
+		fake, state := newFakeOryxModel(llm.Response{}, nil)
+		state.stream = upstream
+		service, recorder, selected := serviceForTest(t, fake)
+		ctx, cancel := context.WithCancel(context.Background())
+		stream, err := service.ChatStream(ctx, "session-stream-cancel", selected, nil)
+		if err != nil {
+			t.Fatalf("ChatStream() error = %v", err)
+		}
+		cancel()
+		if _, err := stream.Recv(); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Recv() error = %v, want context cancellation", err)
+		}
+		if len(recorder.calls) != 1 || recorder.contextObserved == nil || recorder.contextObserved.Err() != nil {
+			t.Fatalf("audit context = %v, calls = %d", recorder.contextObserved, len(recorder.calls))
+		}
+	})
+
+	t.Run("early_close_is_failed_once", func(t *testing.T) {
+		upstream := &fakeResponseStream{items: []fakeResponseStreamItem{{event: llm.StreamEvent{Kind: llm.StreamEventDelta}}}}
+		fake, state := newFakeOryxModel(llm.Response{}, nil)
+		state.stream = upstream
+		service, recorder, selected := serviceForTest(t, fake)
+		stream, err := service.ChatStream(context.Background(), "session-stream-close", selected, nil)
+		if err != nil {
+			t.Fatalf("ChatStream() error = %v", err)
+		}
+		firstCloseErr := stream.Close()
+		if firstCloseErr == nil {
+			t.Fatal("Close() error = nil, want early-close failure")
+		}
+		if err := stream.Close(); err == nil || err.Error() != firstCloseErr.Error() {
+			t.Fatalf("second Close() error = %v, want idempotent %v", err, firstCloseErr)
+		}
+		if len(recorder.calls) != 1 || recorder.calls[0].Success || upstream.closeCalls != 1 {
+			t.Fatalf("audits=%#v closes=%d", recorder.calls, upstream.closeCalls)
+		}
+	})
+
+	t.Run("initialization_failure_is_audited", func(t *testing.T) {
+		fake, state := newFakeOryxModel(llm.Response{}, nil)
+		state.streamErr = errors.New("stream initialization failed")
+		service, recorder, selected := serviceForTest(t, fake)
+		if _, err := service.ChatStream(context.Background(), "session-stream-init", selected, nil); err == nil {
+			t.Fatal("ChatStream() error = nil")
+		}
+		if len(recorder.calls) != 1 || recorder.calls[0].Success {
+			t.Fatalf("audits = %#v", recorder.calls)
+		}
+	})
+
+	t.Run("persistence_failure_prevents_completed_result", func(t *testing.T) {
+		response := llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}}
+		upstream := &fakeResponseStream{items: []fakeResponseStreamItem{{event: llm.StreamEvent{Kind: llm.StreamEventCompleted, Response: &response}}}}
+		fake, state := newFakeOryxModel(llm.Response{}, nil)
+		state.stream = upstream
+		service, recorder, selected := serviceForTest(t, fake)
+		recorder.err = errors.New("insert failed")
+		stream, err := service.ChatStream(context.Background(), "session-stream-persist", selected, nil)
+		if err != nil {
+			t.Fatalf("ChatStream() error = %v", err)
+		}
+		if _, err := stream.Recv(); err == nil || !strings.Contains(err.Error(), "persist llm call") {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if len(recorder.calls) != 1 {
+			t.Fatalf("audit attempts = %d", len(recorder.calls))
+		}
+	})
+}
+
+func TestProviderServiceChatStreamRejectsInvalidInputsBeforeModelCall(t *testing.T) {
+	fake, state := newFakeOryxModel(llm.Response{}, nil)
+	service, _, selected := serviceForTest(t, fake)
+	cases := []struct {
+		name      string
+		ctx       context.Context
+		sessionID string
+		profile   *profile.Profile
+	}{
+		{name: "nil_context", sessionID: "session", profile: selected},
+		{name: "empty_session", ctx: context.Background(), profile: selected},
+		{name: "nil_profile", ctx: context.Background(), sessionID: "session"},
+		{name: "unknown_profile", ctx: context.Background(), sessionID: "session", profile: &profile.Profile{Name: "missing", Provider: selected.Provider}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := service.ChatStream(tc.ctx, tc.sessionID, tc.profile, nil); err == nil {
+				t.Fatal("ChatStream() error = nil")
+			}
+		})
+	}
+	if state.streamCalls != 0 {
+		t.Fatalf("Stream calls = %d, want zero", state.streamCalls)
 	}
 }
 

@@ -17,6 +17,9 @@ type fakeModelState struct {
 	err             error
 	withToolsErr    error
 	generateCalls   int
+	stream          *schema.StreamReader[*schema.Message]
+	streamErr       error
+	streamCalls     int
 	withToolsCalls  int
 	boundTools      []*schema.ToolInfo
 	inputs          [][]*schema.Message
@@ -36,8 +39,14 @@ func (fake *fakeModel) Generate(ctx context.Context, input []*schema.Message, op
 	return fake.state.response, fake.state.err
 }
 
-func (fake *fakeModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	return nil, errors.New("stream is not supported by fake model")
+func (fake *fakeModel) Stream(ctx context.Context, input []*schema.Message, options ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	fake.state.mu.Lock()
+	defer fake.state.mu.Unlock()
+	fake.state.streamCalls++
+	fake.state.contextObserved = ctx
+	fake.state.inputs = append(fake.state.inputs, append([]*schema.Message(nil), input...))
+	fake.state.options = append(fake.state.options, model.GetCommonOptions(nil, options...))
+	return fake.state.stream, fake.state.streamErr
 }
 
 func (fake *fakeModel) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
@@ -76,6 +85,9 @@ type fakeOryxModelState struct {
 	response        llm.Response
 	err             error
 	generateCalls   int
+	stream          llm.ResponseStream
+	streamErr       error
+	streamCalls     int
 	requests        []llm.Request
 	contextObserved context.Context
 }
@@ -91,9 +103,49 @@ func (fake *fakeOryxModel) Generate(ctx context.Context, request llm.Request) (l
 	return fake.state.response, fake.state.err
 }
 
+func (fake *fakeOryxModel) Stream(ctx context.Context, request llm.Request) (llm.ResponseStream, error) {
+	fake.state.mu.Lock()
+	defer fake.state.mu.Unlock()
+	fake.state.streamCalls++
+	fake.state.contextObserved = ctx
+	fake.state.requests = append(fake.state.requests, request)
+	return fake.state.stream, fake.state.streamErr
+}
+
 func newFakeOryxModel(response llm.Response, err error) (*fakeOryxModel, *fakeOryxModelState) {
 	state := &fakeOryxModelState{response: response, err: err}
 	return &fakeOryxModel{state: state}, state
+}
+
+type fakeResponseStreamItem struct {
+	event llm.StreamEvent
+	err   error
+}
+
+type fakeResponseStream struct {
+	mu         sync.Mutex
+	items      []fakeResponseStreamItem
+	index      int
+	closeCalls int
+	closeErr   error
+}
+
+func (stream *fakeResponseStream) Recv() (llm.StreamEvent, error) {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.index >= len(stream.items) {
+		return llm.StreamEvent{}, errors.New("fake stream exhausted without EOF")
+	}
+	item := stream.items[stream.index]
+	stream.index++
+	return item.event, item.err
+}
+
+func (stream *fakeResponseStream) Close() error {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	stream.closeCalls++
+	return stream.closeErr
 }
 
 type fakeToolDefinitionSource struct {

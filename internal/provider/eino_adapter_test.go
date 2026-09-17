@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"io"
 	"testing"
 
 	"github.com/Karlsk/oryxos-go/internal/llm"
@@ -90,6 +92,174 @@ func TestEinoAdapterPreservesMessagesToolsAndResponseMetadata(t *testing.T) {
 	if got.FinishReason != "tool_calls" || got.Usage.PromptTokens != 11 || got.Usage.CompletionTokens != 7 || got.Usage.TotalTokens != 18 {
 		t.Fatalf("response metadata = %#v", got)
 	}
+}
+
+func TestEinoAdapterStreamPreservesDeltasAndCompletes(t *testing.T) {
+	toolIndex := 0
+	chunks := []*schema.Message{
+		{
+			Role:    schema.Assistant,
+			Content: "hel",
+			ToolCalls: []schema.ToolCall{{
+				Index:    &toolIndex,
+				ID:       "call-1",
+				Type:     "function",
+				Function: schema.FunctionCall{Name: "echo", Arguments: `{"text":"`},
+			}},
+		},
+		{
+			Role:    schema.Assistant,
+			Content: "lo",
+			ToolCalls: []schema.ToolCall{{
+				Index:    &toolIndex,
+				Function: schema.FunctionCall{Arguments: `hello"}`},
+			}},
+			ResponseMeta: &schema.ResponseMeta{
+				FinishReason: "tool_calls",
+				Usage:        &schema.TokenUsage{PromptTokens: 4, CompletionTokens: 5, TotalTokens: 9},
+			},
+		},
+	}
+	connector, state := newFakeModel(nil, nil)
+	state.stream = schema.StreamReaderFromArray(chunks)
+	adapter, err := newEinoChatModelAdapter(connector)
+	if err != nil {
+		t.Fatalf("newEinoChatModelAdapter() error = %v", err)
+	}
+
+	stream, err := adapter.Stream(context.Background(), llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "hello"}},
+		Tools:    []llm.ToolDefinition{{Name: "echo", InputSchema: []byte(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer stream.Close()
+
+	first, err := stream.Recv()
+	if err != nil || first.Kind != llm.StreamEventDelta || first.Delta.Content != "hel" || first.Response != nil {
+		t.Fatalf("first Recv() = %#v, %v", first, err)
+	}
+	second, err := stream.Recv()
+	if err != nil || second.Kind != llm.StreamEventDelta || second.Delta.Content != "lo" || second.Response != nil {
+		t.Fatalf("second Recv() = %#v, %v", second, err)
+	}
+	completed, err := stream.Recv()
+	if err != nil || completed.Kind != llm.StreamEventCompleted || completed.Response == nil {
+		t.Fatalf("completed Recv() = %#v, %v", completed, err)
+	}
+	response := completed.Response
+	if response.Message.Content != "hello" || len(response.Message.ToolCalls) != 1 || response.Message.ToolCalls[0].ID != "call-1" || response.Message.ToolCalls[0].Function.Arguments != `{"text":"hello"}` {
+		t.Fatalf("completed response = %#v", response)
+	}
+	if response.FinishReason != "tool_calls" || response.Usage.TotalTokens != 9 {
+		t.Fatalf("completed metadata = %#v", response)
+	}
+	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
+		t.Fatalf("Recv() after completion error = %v, want io.EOF", err)
+	}
+	if state.streamCalls != 1 || state.generateCalls != 0 || state.withToolsCalls != 1 {
+		t.Fatalf("connector calls = stream:%d generate:%d withTools:%d", state.streamCalls, state.generateCalls, state.withToolsCalls)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+}
+
+func TestEinoAdapterStreamRejectsInvalidAndIncompleteStreams(t *testing.T) {
+	t.Run("initialization_error", func(t *testing.T) {
+		upstreamErr := errors.New("stream initialization failed")
+		connector, state := newFakeModel(nil, nil)
+		state.streamErr = upstreamErr
+		adapter, _ := newEinoChatModelAdapter(connector)
+		if _, err := adapter.Stream(context.Background(), llm.Request{}); !errors.Is(err, upstreamErr) {
+			t.Fatalf("Stream() error = %v, want upstream error", err)
+		}
+	})
+
+	t.Run("nil_reader", func(t *testing.T) {
+		connector, _ := newFakeModel(nil, nil)
+		adapter, _ := newEinoChatModelAdapter(connector)
+		if _, err := adapter.Stream(context.Background(), llm.Request{}); err == nil {
+			t.Fatal("Stream() error = nil")
+		}
+	})
+
+	t.Run("invalid_input_before_connector", func(t *testing.T) {
+		connector, state := newFakeModel(nil, nil)
+		adapter, _ := newEinoChatModelAdapter(connector)
+		if _, err := adapter.Stream(context.Background(), llm.Request{Messages: []llm.Message{{Role: "unknown"}}}); err == nil {
+			t.Fatal("Stream() error = nil")
+		}
+		if state.streamCalls != 0 {
+			t.Fatalf("stream calls = %d, want zero", state.streamCalls)
+		}
+	})
+
+	t.Run("empty_stream", func(t *testing.T) {
+		connector, state := newFakeModel(nil, nil)
+		state.stream = schema.StreamReaderFromArray([]*schema.Message{})
+		adapter, _ := newEinoChatModelAdapter(connector)
+		stream, err := adapter.Stream(context.Background(), llm.Request{})
+		if err != nil {
+			t.Fatalf("Stream() error = %v", err)
+		}
+		defer stream.Close()
+		if _, err := stream.Recv(); err == nil || errors.Is(err, io.EOF) {
+			t.Fatalf("Recv() error = %v, want incomplete stream failure", err)
+		}
+	})
+
+	t.Run("nil_chunk", func(t *testing.T) {
+		connector, state := newFakeModel(nil, nil)
+		state.stream = schema.StreamReaderFromArray([]*schema.Message{nil})
+		adapter, _ := newEinoChatModelAdapter(connector)
+		stream, err := adapter.Stream(context.Background(), llm.Request{})
+		if err != nil {
+			t.Fatalf("Stream() error = %v", err)
+		}
+		defer stream.Close()
+		if _, err := stream.Recv(); err == nil {
+			t.Fatal("Recv() error = nil")
+		}
+	})
+
+	t.Run("connector_receive_error", func(t *testing.T) {
+		reader, writer := schema.Pipe[*schema.Message](1)
+		upstreamErr := errors.New("upstream stream failed")
+		writer.Send(nil, upstreamErr)
+		writer.Close()
+		connector, state := newFakeModel(nil, nil)
+		state.stream = reader
+		adapter, _ := newEinoChatModelAdapter(connector)
+		stream, err := adapter.Stream(context.Background(), llm.Request{})
+		if err != nil {
+			t.Fatalf("Stream() error = %v", err)
+		}
+		defer stream.Close()
+		if _, err := stream.Recv(); !errors.Is(err, upstreamErr) {
+			t.Fatalf("Recv() error = %v, want upstream failure", err)
+		}
+	})
+
+	t.Run("early_close_is_idempotent", func(t *testing.T) {
+		connector, state := newFakeModel(nil, nil)
+		state.stream = schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, Content: "unused"}})
+		adapter, _ := newEinoChatModelAdapter(connector)
+		stream, err := adapter.Stream(context.Background(), llm.Request{})
+		if err != nil {
+			t.Fatalf("Stream() error = %v", err)
+		}
+		if err := stream.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+		if err := stream.Close(); err != nil {
+			t.Fatalf("second Close() error = %v", err)
+		}
+		if _, err := stream.Recv(); !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("Recv() after Close error = %v, want io.ErrClosedPipe", err)
+		}
+	})
 }
 
 func TestEinoAdapterRejectsInvalidOryxOSInputBeforeConnectorCall(t *testing.T) {
