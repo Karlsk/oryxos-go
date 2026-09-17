@@ -1,6 +1,6 @@
 # Provider 手动测试指南
 
-本文用于人工验证第 16 节交付的 DeepSeek 与 MiniMax Provider，覆盖真实凭证注入、网络连通、Provider 选路、Tool Calling 响应保留以及 `llm_calls` 审计写入。
+本文用于人工验证第 16 节交付的 DeepSeek 与 MiniMax Provider，覆盖真实凭证注入、网络连通、Provider 选路、同步 Generate、流式 Stream、Tool Calling 响应保留以及 `llm_calls` 审计写入。
 
 ## 1. 当前测试边界
 
@@ -12,7 +12,7 @@
 go test -tags=integration ./internal/provider -run '^TestProviderSmoke$' -count=1 -v
 ```
 
-该测试不会执行 Tool。它只把 `echo` Tool schema 交给模型，要求模型返回一次 Tool Call，并检查 Tool Call ID、调用结果和审计记录。
+该测试不会执行 Tool。它把 `echo` Tool schema 交给模型，对每个 Provider 分别执行一次 Generate 和一次 Stream，检查 Tool Call ID、流式 completed 完整响应以及每次逻辑调用一条审计记录。
 
 ## 2. 前置条件
 
@@ -169,8 +169,9 @@ go test -tags=integration ./internal/provider \
 - 使用 `deepseek` 工厂；
 - 使用 DeepSeek 原生 connector，OryxOS 不设置 `BaseURL`；
 - 调用模型 `deepseek-flash`；
-- 返回非空 Tool Call，并保留 Tool Call ID；
-- 临时 SQLite 中只有一条对应 Session 的成功 `llm_calls` 记录。
+- Generate 和 Stream 都返回非空 Tool Call，并保留 Tool Call ID；
+- Stream 按 delta → completed → `io.EOF` 结束，completed 中包含合并后的完整 Tool Call；
+- 临时 SQLite 中有两条成功 `llm_calls`，分别对应 Generate 和 Stream，chunk 不重复落账。
 
 ### 5.2 MiniMax
 
@@ -193,8 +194,9 @@ go test -tags=integration ./internal/provider \
 - 实际 connector 是 Eino-ext OpenAI connector；
 - 工厂固定使用 `https://api.minimax.cn/v1`；
 - 调用模型 `MiniMax-M3`；
-- Tool Call ID 被完整保留；
-- 临时 SQLite 中只有一条对应 Session 的成功 `llm_calls` 记录。
+- Generate 和 Stream 的 Tool Call ID 都被完整保留；
+- Stream 按 delta → completed → `io.EOF` 结束，completed 中包含合并后的完整 Tool Call；
+- 临时 SQLite 中有两条成功 `llm_calls`，分别对应 Generate 和 Stream，chunk 不重复落账。
 
 ## 6. 一次验证两个 Provider 的选路
 
@@ -256,8 +258,9 @@ go test ./internal/config ./internal/profile \
 - DeepSeek 子测试为 `PASS`，而不是 `SKIP`；
 - MiniMax 子测试为 `PASS`，而不是 `SKIP`；
 - 两个子测试分别使用预期模型；
-- 两个响应都包含非空 Tool Call ID；
-- 每次模型调用都写入一条成功的 `llm_calls` 记录；
+- 两个 Provider 的 Generate 与 Stream 响应都包含非空 Tool Call ID；
+- Stream 都产生 completed 完整响应并随后返回 `io.EOF`；
+- 每次逻辑模型调用都写入一条成功的 `llm_calls` 记录，Stream chunk 不重复写入；
 - 路由与配置回归测试全部通过；
 - 输出中没有真实 API Key。
 

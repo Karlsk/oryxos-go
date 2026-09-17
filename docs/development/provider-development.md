@@ -13,6 +13,7 @@ Provider 层的目标不是重新实现厂商 HTTP SDK，而是把外部 connect
 ```go
 type ChatModel interface {
 	Generate(ctx context.Context, request Request) (Response, error)
+	Stream(ctx context.Context, request Request) (ResponseStream, error)
 }
 
 type Request struct {
@@ -27,7 +28,7 @@ type Response struct {
 }
 ```
 
-这个接口刻意保持同步和窄小。Runtime 只需要知道：给定消息与 Tool 定义，模型生成一条响应。它不需要知道厂商 SDK、HTTP endpoint、Eino `schema.Message` 或 connector 配置。
+这个接口刻意保持窄小：`Generate` 返回完整响应，`Stream` 通过 OryxOS `ResponseStream` 返回有序 delta、唯一 completed 完整响应，再返回 `io.EOF`。Runtime 不需要知道厂商 SDK、HTTP endpoint、Eino `schema.Message`、`schema.StreamReader` 或 connector 配置。第 16 节只把 Stream 交付到 Provider 边界，不代表 ReAct、CLI 或 Web/SSE 已经流式化。
 
 ### 1.2 Provider
 
@@ -49,6 +50,7 @@ Adapter 负责翻译两个接口世界。当前的 `einoChatModelAdapter` 把 Ei
 - OryxOS Tool Definition → Eino ToolInfo；
 - Eino Tool Call → OryxOS Tool Call；
 - Eino Usage / FinishReason → OryxOS Response。
+- Eino Stream chunk → OryxOS delta，并通过 `schema.ConcatMessages` 合并完整响应。
 
 只要新的 connector 实现 `model.ToolCallingChatModel`，通常就应复用这个通用 adapter，而不是为每个厂商复制一份消息转换代码。
 
@@ -103,7 +105,8 @@ Eino core / Eino-ext
 | `internal/provider/eino_adapter.go` | OryxOS 与 Eino 之间的类型转换 |
 | `internal/provider/registry.go` | 工厂按 Provider 名路由，模型按 Profile 名隔离 |
 | `internal/provider/tool_schema_resolver.go` | 只解析 Tool 元数据，不执行 Tool |
-| `internal/provider/service.go` | 单次同步调用、耗时统计、错误脱敏与 `llm_calls` 写入 |
+| `internal/provider/service.go` | 调用前校验、同步调用与共享审计逻辑 |
+| `internal/provider/stream.go` | 流式调用、终态识别、幂等关闭与恰好一次审计 |
 | `internal/store/llm_call*.go` | `llm_calls` 数据模型和短事务写入 |
 | `internal/provider/*_test.go` | 工厂、适配、隔离、审计和真实连通性测试 |
 
@@ -292,9 +295,11 @@ Adapter 将 `InputSchema` 解析成 Eino JSON Schema，再创建 `schema.ToolInf
 
 Provider 未返回 usage 时使用零值。零值表示“不可用或未提供”，不能伪造 token 数量。
 
-### 6.4 当前只暴露同步 Generate
+### 6.4 Stream 状态机
 
-Eino connector 可能实现 Stream，但 OryxOS 当前 `llm.ChatModel` 只暴露同步 `Generate`。不要因为 connector 支持 Stream，就把 Eino Stream 类型向 Runtime 或 Web 层透传。SSE、WebSocket 和流式领域端口都不在当前核心范围内。
+`einoChatModelAdapter.Stream` 复用相同的消息与 Tool schema 转换，然后调用 connector `Stream`。返回的 OryxOS reader 每次读取一个 Eino chunk，转换并返回 `delta`；底层 `io.EOF` 到来时，用 `schema.ConcatMessages` 合并已保存的 chunks，转换为完整 `llm.Response` 并返回一次 `completed`；下一次读取返回 `io.EOF`。
+
+空流、nil chunk、接收错误或无法合并的 Tool Call 都是失败，不能伪造成空的成功响应。OryxOS `Close` 是幂等的，确保 Eino reader 实际只关闭一次。reader 只允许单消费者，不额外启动 goroutine，也不返回 channel。Eino Stream 类型仍不能向 Runtime 或 Web 层透传；SSE、WebSocket、ReAct 流式事件和 CLI 增量输出不在本节范围内。
 
 ## 7. Registry：工厂按厂商，实例按 Profile
 
@@ -338,18 +343,18 @@ Registry 必须构造两个实例，不能用 `models["deepseek"]` 让它们共�
 
 ## 8. Provider Service：调用与审计边界
 
-`provider.Service.Chat` 表示一次同步模型调用，不表示完整 ReAct 轮次。它负责：
+`provider.Service.Chat` 和 `ChatStream` 表示一次模型调用，不表示完整 ReAct 轮次。共同负责：
 
 1. 校验 Session ID 和 Profile；
 2. 按 `Profile.name` 获取模型；
 3. 按 Profile 中的 Tool 名解析 OryxOS Tool Definition；
-4. 调用一次 `llm.ChatModel.Generate`；
+4. 调用一次 `llm.ChatModel.Generate` 或 `Stream`；
 5. 计算耗时；
 6. 对上游错误脱敏；
-7. 成功或失败都写一条 `llm_calls`；
+7. 每次逻辑调用成功或失败都只写一条 `llm_calls`；
 8. 返回 OryxOS Response 或脱敏后的错误。
 
-只有真正发起的模型调用才产生 `llm_calls`。输入非法、Profile 未绑定或 Tool schema 解析失败发生在调用之前，不应伪造成 Provider 调用记录。
+只有真正发起的模型调用才产生 `llm_calls`。输入非法、Profile 未绑定或 Tool schema 解析失败发生在调用之前，不应伪造成 Provider 调用记录。Stream 初始化失败当场记失败；返回 reader 后，completed 记成功，中途读取失败、提前 EOF 或 completed 前 Close 记失败。delta 不单独落账。
 
 模型调用使用原始 `ctx`，因此取消与超时会传到 connector。调用记录使用 `context.WithoutCancel(ctx)`，这样模型因取消失败后仍会尝试写入失败记录，同时保留原 context 中的值。
 
@@ -491,6 +496,13 @@ func (adapter *vendorAdapter) Generate(
 	// 5. 完整保留 Tool Calls、Usage、FinishReason
 	// 6. 对 nil 或畸形响应显式报错
 }
+
+func (adapter *vendorAdapter) Stream(
+	ctx context.Context,
+	request llm.Request,
+) (llm.ResponseStream, error) {
+	// 复用请求转换；返回 OryxOS reader，不暴露 Eino StreamReader。
+}
 ```
 
 adapter 应放在 `internal/provider`，不要放入 `internal/llm`。`internal/llm` 只定义稳定的领域契约，不依赖任何实现库。
@@ -512,6 +524,9 @@ adapter 应放在 `internal/provider`，不要放入 `internal/llm`。`internal/
 - [ ] finish reason 被保留；
 - [ ] nil response 和未初始化 adapter 显式失败；
 - [ ] context 原样传到 connector；
+- [ ] Stream delta 保持顺序，分片 Tool Call 在 completed 中完整合并；
+- [ ] Stream 正常序列为 delta → completed → `io.EOF`；错误不伪装成事件；
+- [ ] Close 幂等且底层 reader 只关闭一次；
 - [ ] Eino 或厂商 SDK 类型没有越过 `internal/provider`。
 
 ## 11. 测试策略
@@ -538,6 +553,7 @@ adapter 应放在 `internal/provider`，不要放入 `internal/llm`。`internal/
 - response content、reasoning、usage、finish reason；
 - 未知角色、空 Tool 名、非法 schema；
 - `WithTools` 失败、`Generate` 失败和 nil response；
+- `Stream` 初始化/读取失败、空流、nil chunk、合并失败和幂等 Close；
 - 无 Tool 时不调用 `WithTools`。
 
 ### 11.3 Registry 单元测试
@@ -557,6 +573,7 @@ adapter 应放在 `internal/provider`，不要放入 `internal/llm`。`internal/
 至少覆盖：
 
 - 一次 `Chat` 只调用一次 `Generate`；
+- 一次 `ChatStream` 只调用一次 `Stream`；
 - Tool resolver 只提供元数据且保持顺序；
 - Provider Service 返回 Tool Calls，但不执行 Tool；
 - 成功调用写 token、耗时、Provider、model 和 Session；
@@ -565,6 +582,8 @@ adapter 应放在 `internal/provider`，不要放入 `internal/llm`。`internal/
 - 已取消模型调用仍尝试写审计；
 - 审计写入失败不会被吞掉；
 - 输入校验失败不会误记为模型调用。
+- Stream completed、初始化失败、读取失败、提前 EOF 和提前 Close 都恰好写一条终态记录；
+- completed 返回后再 Close 不会重复落账，审计写入失败不会伪装成成功完成。
 
 ### 11.5 真实 Provider 冒烟测试
 
@@ -575,7 +594,7 @@ adapter 应放在 `internal/provider`，不要放入 `internal/llm`。`internal/
 - 测试实际发起请求，不能因缺少变量而把 `SKIP` 当 `PASS`；
 - 路由到预期 Provider 和模型；
 - 响应含非空 Tool Call ID；
-- `llm_calls` 中有一条对应 Session 的成功记录；
+- Generate 与 Stream 各有一条对应 Session 的成功记录，Stream chunk 不重复落账；
 - 输出不包含真实凭证。
 
 ## 12. 版本升级流程
@@ -653,7 +672,7 @@ go test -tags=integration ./internal/provider \
 | Provider Service 执行 Tool | ReAct 控制权分裂，可能重复执行 | 只返回 Tool Call，由 ToolExecutor 串行执行 |
 | 错误直接 `%w` 返回 | 可能泄漏 API key 或带凭证 URL | 在用户可见和持久化边界先脱敏 |
 | Provider 失败后自动切换 | 超出核心范围，调用行为不可预测 | 当前直接返回错误；fallback 属于扩展阶段 |
-| 因 connector 支持 Stream 就提供 SSE | connector 能力与产品 API 承诺混淆 | 当前保持同步 JSON 与同步模型端口 |
+| 因 Provider 支持 Stream 就提供 SSE | 模型端口能力与产品传输承诺混淆 | Provider 使用 OryxOS Stream；核心 Web 仍保持同步 JSON |
 | 只跑 fake 测试 | 无法发现账号区域、模型 ID、协议兼容问题 | 单元测试之外再跑真实 Tool Calling 冒烟测试 |
 
 ## 15. 提交前检查清单
@@ -664,10 +683,11 @@ go test -tags=integration ./internal/provider \
 - [ ] 用户配置仍只提供 API key，Profile 仍只选 name/model/temperature；
 - [ ] 工厂按 Provider 名注册，实例按 Profile 名保存；
 - [ ] adapter 完整保留 Message、Tool Call、Usage 和 FinishReason；
+- [ ] Stream 保持 delta 顺序，completed 含完整响应，随后返回 `io.EOF`，Close 幂等；
 - [ ] Provider 层不执行 Tool；
-- [ ] 每次实际模型调用都有成功或失败的 `llm_calls` 写入；
+- [ ] 每次逻辑 Generate/Stream 调用都有且只有一条成功或失败的 `llm_calls` 写入；
 - [ ] 错误和测试输出不泄漏凭证；
 - [ ] connector 版本已固定；
 - [ ] 单元测试、架构测试、vet 和无 CGO 构建通过；
-- [ ] 真实 Provider 冒烟测试使用明确模型 ID 并验证 Tool Call ID；
+- [ ] 真实 Provider 冒烟测试使用明确模型 ID，并验证 Generate/Stream 的 Tool Call ID；
 - [ ] 需求文档、技术方案、项目指南和测试文档与代码一致。
