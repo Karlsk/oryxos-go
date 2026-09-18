@@ -1,16 +1,13 @@
 <!--
 Sync Impact Report
-- Version change: 3.0.0 -> 4.0.0
+- Version change: 4.0.0 -> 5.0.0
 - Modified principles:
-  - III. OryxOS Owns the Runtime Model Boundary: replaced the Eino-core runtime contract with the approved OryxOS llm.ChatModel port and confined Eino to Provider adapters
-  - IV. Providers Are Explicitly Mapped and Profile-Isolated: changed stored model instances from Eino types to OryxOS llm.ChatModel
-  - IX. All Entry Points Share One Synchronous Runtime: clarified that Provider-level pull streaming does not expose ReAct, CLI, SSE, or WebSocket streaming
+  - VI. All Tools Use One Controlled Execution Path: replaced the obsolete Eino Tool execution contract with the OryxOS-owned InvokableTool port and llm.ToolDefinition metadata boundary
 - Modified sections:
-  - Technical and Scope Constraints: changed the dependency direction to the OryxOS model port
+  - Mandatory Stack and Package Boundaries: confined all Eino types and imports to internal/provider and made the Tool package depend only on OryxOS domain ports
 - Added sections: none
 - Removed sections: none
-- Follow-up TODOs:
-  - Later ReAct/CLI/Web streaming requires a separate approved feature and MUST NOT be inferred from Provider Stream
+- Follow-up TODOs: none
 -->
 
 # OryxOS Constitution
@@ -101,9 +98,12 @@ only and MUST NOT duplicate Agent model, Tool, Skill, Channel, or schedule choic
 ### VI. All Tools Use One Controlled Execution Path
 
 Built-in Tools, MCP Tools, and Go Tools compiled into the binary MUST enter
-`ToolRegistry` and execute through `ToolExecutor`. Eino `tool.BaseTool` supplies
-metadata only; executable Tools MUST implement `tool.InvokableTool` and
-`InvokableRun`. OryxOS runtime metadata MUST be carried by `OryxTool`.
+`ToolRegistry` and execute through `ToolExecutor`. Executable Tools MUST implement the
+OryxOS-owned `InvokableTool` port: `Info` MUST return an OryxOS `llm.ToolDefinition`, and
+`Invoke` MUST execute the original JSON arguments and return a textual result. OryxOS
+runtime metadata MUST be carried by `OryxTool`. Tool packages MUST NOT import Eino;
+conversion between OryxOS Tool definitions and Eino schemas belongs only in the Provider
+adapter layer.
 
 `ToolExecutor` MUST perform schema validation, Profile allow-list filtering, Sandbox
 validation, timeout handling, execution, result accumulation, and call recording. Tool
@@ -200,9 +200,10 @@ provider -> Eino core/Eino-ext connectors
 provider/tool-mcp/store -> concrete external libraries
 ```
 
-`internal/runtime` MUST NOT import Gin, Cobra, GORM, or Eino-ext. `internal/web` MUST
-NOT access concrete Provider connectors or Store implementations directly. Circular package
-dependencies are prohibited.
+`internal/runtime` MUST NOT import Gin, Cobra, GORM, Eino core, or Eino-ext.
+`internal/tool` MUST NOT import Eino core or Eino-ext. `internal/web` MUST NOT access
+concrete Provider connectors or Store implementations directly. Circular package dependencies
+are prohibited.
 
 ### Fixed Core Contract
 
@@ -365,4 +366,4 @@ check. Deviations MUST be documented and explicitly approved; silent exceptions 
 prohibited. `AGENTS.md` provides operational implementation guidance, while
 `docs/TechnicalSolution.md` provides architecture details.
 
-**Version**: 4.0.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-09-17
+**Version**: 5.0.0 | **Ratified**: 2026-08-15 | **Last Amended**: 2026-09-17
