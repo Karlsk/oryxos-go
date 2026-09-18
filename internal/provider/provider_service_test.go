@@ -327,7 +327,10 @@ func TestProviderServicePreservesToolCallAndNeverExecutesTool(t *testing.T) {
 	if err := registry.BindProfile(context.Background(), selected, config.ProviderDefinition{Name: DeepSeek, APIKey: "key"}); err != nil {
 		t.Fatalf("BindProfile() error = %v", err)
 	}
-	source := &fakeToolDefinitionSource{definitions: map[string]llm.ToolDefinition{"read_file": {Name: "read_file", Description: "read"}}}
+	source := &fakeToolDefinitionSource{definitions: map[string]llm.ToolDefinition{
+		"read_file":  {Name: "read_file", Description: "read"},
+		"write_file": {Name: "write_file", Description: "must stay unavailable"},
+	}}
 	resolver, _ := NewToolSchemaResolver(source)
 	recorder := &fakeRecorder{}
 	service, err := NewService(registry, resolver, recorder)
@@ -410,6 +413,40 @@ func TestProviderServiceAuditsSuccessFailureAndPersistenceErrors(t *testing.T) {
 		_, err := service.Chat(context.Background(), "session-persist", selected, nil)
 		if !errors.Is(err, persistErr) || !strings.Contains(err.Error(), "provider failed") {
 			t.Fatalf("Chat() error = %v, want persistence error with provider context", err)
+		}
+		var auditErr *AuditPersistenceError
+		if errors.As(err, &auditErr) {
+			t.Fatalf("Chat() error = %T, must not mark a failed model response as available", err)
+		}
+		if len(recorder.calls) != 1 {
+			t.Fatalf("audit attempts = %d, want exactly one", len(recorder.calls))
+		}
+	})
+
+	t.Run("successful_response_is_preserved_when_persistence_fails", func(t *testing.T) {
+		persistErr := errors.New("insert failed")
+		response := llm.Response{Message: llm.Message{
+			Role:    llm.RoleAssistant,
+			Content: "I need to inspect the file",
+			ToolCalls: []llm.ToolCall{{
+				ID:       "call-1",
+				Function: llm.FunctionCall{Name: "read_file", Arguments: `{"path":"README.md"}`},
+			}},
+		}}
+		fake, _ := newFakeOryxModel(response, nil)
+		service, recorder, selected := serviceForTest(t, fake)
+		recorder.err = persistErr
+
+		got, err := service.Chat(context.Background(), "session-persist", selected, nil)
+		var auditErr *AuditPersistenceError
+		if !errors.As(err, &auditErr) || !errors.Is(err, persistErr) {
+			t.Fatalf("Chat() error = %v, want AuditPersistenceError wrapping persistence failure", err)
+		}
+		if !auditErr.ModelResponseAvailable() {
+			t.Fatal("ModelResponseAvailable() = false, want true")
+		}
+		if !reflect.DeepEqual(got, response) {
+			t.Fatalf("Chat() response = %#v, want preserved %#v", got, response)
 		}
 		if len(recorder.calls) != 1 {
 			t.Fatalf("audit attempts = %d, want exactly one", len(recorder.calls))

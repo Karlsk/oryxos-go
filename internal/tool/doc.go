@@ -1,5 +1,3 @@
-// Package tool contains the OryxOS tool registry and execution boundary.
-//
-// The oryxos-init Skill creates this package as a compile-safe placeholder.
-// Tool behavior is implemented by a later feature specification.
+// Package tool contains the OryxOS Tool port and controlled execution boundary.
+// Tool registry and concrete Tool implementations are added by later lessons.
 package tool

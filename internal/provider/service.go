@@ -18,6 +18,31 @@ type LlmCallRecorder interface {
 	Create(ctx context.Context, call *store.LlmCall) error
 }
 
+// AuditPersistenceError reports that a model response completed successfully
+// but its llm_calls outcome could not be persisted. Callers may retain the
+// response for diagnosis, but must not execute any Tool calls from it.
+type AuditPersistenceError struct {
+	Cause error
+}
+
+func (err *AuditPersistenceError) Error() string {
+	if err == nil || err.Cause == nil {
+		return "persist llm call outcome"
+	}
+	return err.Cause.Error()
+}
+
+func (err *AuditPersistenceError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.Cause
+}
+
+// ModelResponseAvailable marks that the returned response came from a
+// successful model call even though its audit record failed to persist.
+func (*AuditPersistenceError) ModelResponseAvailable() bool { return true }
+
 // Service performs one synchronous model call for a Profile binding.
 type Service struct {
 	registry *Registry
@@ -56,6 +81,9 @@ func (service *Service) Chat(ctx context.Context, sessionID string, selected *pr
 	startedAt := service.now()
 	response, callErr := chatModel.Generate(ctx, llm.Request{Messages: messages, Tools: definitions})
 	if outcomeErr := service.recordOutcome(ctx, callMetadataFrom(sessionID, selected), startedAt, &response, callErr); outcomeErr != nil {
+		if callErr == nil {
+			return response, &AuditPersistenceError{Cause: outcomeErr}
+		}
 		return llm.Response{}, outcomeErr
 	}
 	return response, nil

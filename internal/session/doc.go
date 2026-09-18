@@ -1,5 +1,3 @@
-// Package session contains session resolution and persistence coordination.
-//
-// The oryxos-init Skill creates this package as a compile-safe placeholder.
-// Session behavior is implemented by a later feature specification.
+// Package session contains the race-safe in-memory message aggregate.
+// Session resolution and persistence are added by lesson 18.
 package session

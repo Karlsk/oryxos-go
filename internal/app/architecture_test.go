@@ -14,12 +14,7 @@ var placeholderCases = []struct {
 	path string
 	want string
 }{
-	{"internal/skill/doc.go", "// Package skill contains loading of Profile-referenced SKILL.md content.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Skill behavior is implemented by a later feature specification.\npackage skill\n"},
-	{"internal/bootstrap/doc.go", "// Package bootstrap contains loading of Bootstrap prompt-context files.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Bootstrap behavior is implemented by a later feature specification.\npackage bootstrap\n"},
-	{"internal/runtime/doc.go", "// Package runtime contains the OryxOS Agent runtime and ReAct loop.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Runtime behavior is implemented by a later feature specification.\npackage runtime\n"},
 	{"internal/memory/doc.go", "// Package memory contains the Markdown-backed long-term memory store.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Memory behavior is implemented by a later feature specification.\npackage memory\n"},
-	{"internal/session/doc.go", "// Package session contains session resolution and persistence coordination.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Session behavior is implemented by a later feature specification.\npackage session\n"},
-	{"internal/tool/doc.go", "// Package tool contains the OryxOS tool registry and execution boundary.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Tool behavior is implemented by a later feature specification.\npackage tool\n"},
 	{"internal/tool/builtin/doc.go", "// Package builtin contains OryxOS built-in tool implementations.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Built-in tool behavior is implemented by a later feature specification.\npackage builtin\n"},
 	{"internal/tool/mcp/doc.go", "// Package mcp contains the official MCP Go SDK client adapter.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// MCP tool behavior is implemented by a later feature specification.\npackage mcp\n"},
 	{"internal/sandbox/doc.go", "// Package sandbox contains application-level file, command, and URL validation.\n//\n// The oryxos-init Skill creates this package as a compile-safe placeholder.\n// Sandbox behavior is implemented by a later feature specification.\npackage sandbox\n"},
@@ -79,5 +74,54 @@ func TestArchitectureEinoImportsStayInsideProvider(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("scan internal imports: %v", err)
+	}
+}
+
+func TestArchitectureRejectsAutomaticAgentAndForbiddenRuntimeDependencies(t *testing.T) {
+	root := repositoryRoot(t)
+	internalRoot := filepath.Join(root, "internal")
+	err := filepath.WalkDir(internalRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+		relative, err := filepath.Rel(internalRoot, path)
+		if err != nil {
+			return err
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		for _, imported := range parsed.Imports {
+			name := strings.Trim(imported.Path.Value, `"`)
+			if strings.Contains(name, "/adk") {
+				t.Errorf("automatic Agent dependency is forbidden: %s imports %s", relative, name)
+			}
+			if strings.HasPrefix(relative, "runtime"+string(filepath.Separator)) {
+				for _, forbidden := range []string{"github.com/gin-gonic/gin", "gorm.io/gorm", "github.com/glebarez/sqlite", "github.com/cloudwego/eino"} {
+					if strings.HasPrefix(name, forbidden) {
+						t.Errorf("runtime framework/storage import is forbidden: %s imports %s", relative, name)
+					}
+				}
+			}
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		text := string(content)
+		if strings.Contains(text, "AutoMigrate(") {
+			t.Errorf("production AutoMigrate is forbidden: %s", relative)
+		}
+		if strings.Contains(text, "mattn/go-sqlite3") {
+			t.Errorf("CGO SQLite driver is forbidden: %s", relative)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan architecture boundaries: %v", err)
 	}
 }
