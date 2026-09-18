@@ -14,6 +14,9 @@ import (
 //go:embed migrations/001_llm_calls.sql
 var llmCallsMigration string
 
+//go:embed migrations/002_tool_invocations.sql
+var toolInvocationsMigration string
+
 // OpenSQLite opens the pure-Go SQLite database and applies repository-owned migrations.
 func OpenSQLite(ctx context.Context, path string) (*gorm.DB, error) {
 	if ctx == nil {
@@ -36,6 +39,13 @@ func OpenSQLite(ctx context.Context, path string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	if err := database.WithContext(ctx).Exec(llmCallsMigration).Error; err != nil {
+		sqlDatabase, dbErr := database.DB()
+		if dbErr == nil {
+			_ = sqlDatabase.Close()
+		}
+		return nil, fmt.Errorf("apply sqlite migrations: %w", err)
+	}
+	if err := database.WithContext(ctx).Exec(toolInvocationsMigration).Error; err != nil {
 		sqlDatabase, dbErr := database.DB()
 		if dbErr == nil {
 			_ = sqlDatabase.Close()

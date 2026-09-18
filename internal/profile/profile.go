@@ -70,11 +70,16 @@ type rawProfile struct {
 	Schedules      []ScheduleConfig      `yaml:"schedules"`
 	Channels       []ChannelConfig       `yaml:"channels"`
 	Bootstrap      []string              `yaml:"bootstrap"`
-	Settings       SettingsConfig        `yaml:"settings"`
+	Settings       rawSettingsConfig     `yaml:"settings"`
 }
 
 type rawProviderConfig struct {
 	Name        string   `yaml:"name"`
 	Model       string   `yaml:"model"`
 	Temperature *float32 `yaml:"temperature"`
+}
+
+type rawSettingsConfig struct {
+	MaxIterations   *int `yaml:"max_iterations"`
+	MaxHistoryTurns *int `yaml:"max_history_turns"`
 }

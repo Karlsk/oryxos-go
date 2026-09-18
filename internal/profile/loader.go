@@ -16,7 +16,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultTemperature float32 = 0.7
+const (
+	defaultTemperature     float32 = 0.7
+	defaultMaxIterations   int     = 10
+	defaultMaxHistoryTurns int     = 20
+)
 
 var environmentPlaceholder = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 var unknownYAMLField = regexp.MustCompile(`field ([^ ]+) not found`)
@@ -157,6 +161,20 @@ func validateProfile(raw rawProfile, declaredProviders map[string]struct{}) (*Pr
 	if math.IsNaN(float64(temperature)) || math.IsInf(float64(temperature), 0) {
 		return nil, fmt.Errorf("provider.temperature must be finite")
 	}
+	maxIterations := defaultMaxIterations
+	if raw.Settings.MaxIterations != nil {
+		maxIterations = *raw.Settings.MaxIterations
+	}
+	if maxIterations <= 0 {
+		return nil, fmt.Errorf("settings.max_iterations must be positive")
+	}
+	maxHistoryTurns := defaultMaxHistoryTurns
+	if raw.Settings.MaxHistoryTurns != nil {
+		maxHistoryTurns = *raw.Settings.MaxHistoryTurns
+	}
+	if maxHistoryTurns <= 0 {
+		return nil, fmt.Errorf("settings.max_history_turns must be positive")
+	}
 
 	return &Profile{
 		Name:           name,
@@ -170,7 +188,10 @@ func validateProfile(raw rawProfile, declaredProviders map[string]struct{}) (*Pr
 		Schedules:      append([]ScheduleConfig(nil), raw.Schedules...),
 		Channels:       cloneChannels(raw.Channels),
 		Bootstrap:      append([]string(nil), raw.Bootstrap...),
-		Settings:       raw.Settings,
+		Settings: SettingsConfig{
+			MaxIterations:   maxIterations,
+			MaxHistoryTurns: maxHistoryTurns,
+		},
 	}, nil
 }
 

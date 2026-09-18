@@ -61,6 +61,54 @@ settings:
 	}
 }
 
+func TestLoaderDefaultsRuntimeSettingsWhenOmitted(t *testing.T) {
+	directory := t.TempDir()
+	writeProfile(t, directory, "default.yaml", minimalProfile("default", "deepseek", "deepseek-chat", "0.3"))
+
+	registry, diagnostics, err := (Loader{}).LoadDirectory(directory, map[string]struct{}{"deepseek": {}})
+	if err != nil || len(diagnostics) != 0 {
+		t.Fatalf("LoadDirectory() = %v, %v", diagnostics, err)
+	}
+	got, ok := registry.Get("default")
+	if !ok {
+		t.Fatal("registry.Get(default) = false")
+	}
+	if got.Settings.MaxIterations != 10 || got.Settings.MaxHistoryTurns != 20 {
+		t.Fatalf("settings = %#v, want defaults 10/20", got.Settings)
+	}
+}
+
+func TestLoaderIsolatesNonPositiveRuntimeSettings(t *testing.T) {
+	cases := []struct {
+		name     string
+		settings string
+		want     string
+	}{
+		{name: "zero_iterations", settings: "  max_iterations: 0\n", want: "max_iterations"},
+		{name: "negative_iterations", settings: "  max_iterations: -1\n", want: "max_iterations"},
+		{name: "zero_history", settings: "  max_history_turns: 0\n", want: "max_history_turns"},
+		{name: "negative_history", settings: "  max_history_turns: -1\n", want: "max_history_turns"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			directory := t.TempDir()
+			content := minimalProfile("bad", "deepseek", "deepseek-chat", "0.3") + "settings:\n" + tc.settings
+			writeProfile(t, directory, "bad.yaml", content)
+
+			registry, diagnostics, err := (Loader{}).LoadDirectory(directory, map[string]struct{}{"deepseek": {}})
+			if err != nil {
+				t.Fatalf("LoadDirectory() fatal error = %v", err)
+			}
+			if registry.Len() != 0 || len(diagnostics) != 1 {
+				t.Fatalf("registry=%d diagnostics=%v, want one isolated diagnostic", registry.Len(), diagnostics)
+			}
+			if !strings.Contains(diagnostics[0].Error(), tc.want) {
+				t.Fatalf("diagnostic = %q, want %q", diagnostics[0], tc.want)
+			}
+		})
+	}
+}
+
 func TestLoaderIsolatesMalformedProfilesAndKeepsLexicalDuplicateWinner(t *testing.T) {
 	directory := t.TempDir()
 	writeProfile(t, directory, "01-first.yaml", minimalProfile("shared", "deepseek", "deepseek-chat", "0.2"))
